@@ -32,11 +32,19 @@ pip install -r requirements.txt
 
 ### 3. 設定
 
-`stock.csv` ファイルを編集し、分析したいティッカーシンボルを1行に1つずつ入力します。
+分析対象のティッカーリスト (`stock.csv`) は、以下のいずれかの方法で準備します。
+
+#### A) スクリプトで自動生成 (推奨)
+以下のコマンドを実行すると、DataHub.io から最新のNASDAQとNYSEの上場企業リストを取得し、統合した `stock.csv` を自動で生成します。
+```bash
+python get_tickers.py
+```
+
+#### B) 手動で編集
+`stock.csv` ファイルを直接編集し、分析したいティッカーシンボルを1行に1つずつ入力することもできます。
 
 **例 (`stock.csv`):**
-
-```
+```csv
 NVDA
 PLTR
 OKLO
@@ -66,6 +74,7 @@ python historical_analyzer.py
 ```
 .
 ├── main.py                   # メインプログラム。stock.csvを読み込み分析を実行
+├── get_tickers.py            # NASDAQとNYSEのティッカーを取得しstock.csvを生成
 ├── stock.csv                 # 分析対象のティッカーリスト
 ├── data_fetcher.py           # yfinanceから株価データを取得
 ├── indicators.py             # テクニカル指標を計算
