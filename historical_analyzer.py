@@ -70,11 +70,20 @@ def find_stage_transitions(ticker: str, period_to_analyze: int = 252):
 
     return stage_transitions
 
+import sys
+
 def main():
     """
     メインの実行関数
     """
-    ticker_to_analyze = "DFLI"
+    if len(sys.argv) > 1:
+        ticker_to_analyze = sys.argv[1]
+    else:
+        # デフォルトのティッカー、またはエラーメッセージを表示
+        print("エラー: 分析するティッカーシンボルをコマンドライン引数として指定してください。")
+        print("例: python historical_analyzer.py AAPL")
+        return
+
     find_stage_transitions(ticker_to_analyze)
 
 if __name__ == '__main__':
