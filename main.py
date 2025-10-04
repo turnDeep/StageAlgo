@@ -67,12 +67,26 @@ def run_analysis_for_ticker(ticker: str, benchmark_df: pd.DataFrame):
 
 def main():
     """
-    メインの実行関数。指定されたティッカーの分析を行います。
+    メインの実行関数。stock.csvからティッカーを読み込み、分析を実行します。
     """
-    # 分析対象を "DFLI" に変更
-    tickers_to_analyze = ["DFLI"]
+    try:
+        # 'utf-8-sig' を使ってBOMを処理し、各行からティッカーを読み込む
+        with open('stock.csv', 'r', encoding='utf-8-sig') as f:
+            tickers_to_analyze = [line.strip() for line in f if line.strip()]
 
-    print("ステージ分析を開始します...")
+        if not tickers_to_analyze:
+            print("エラー: stock.csv が空か、有効なティッカーが含まれていません。")
+            return
+
+        print(f"stock.csv から {len(tickers_to_analyze)} 個のティッカーを読み込みました。")
+    except FileNotFoundError:
+        print("エラー: stock.csv が見つかりません。プログラムを終了します。")
+        return
+    except Exception as e:
+        print(f"エラー: stock.csv の読み込み中に予期せぬエラーが発生しました: {e}")
+        return
+
+    print("\nステージ分析を開始します...")
     print("ベンチマークデータ(SPY)を取得中...")
 
     # 最初にベンチマークデータを一度だけ取得
