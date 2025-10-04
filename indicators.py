@@ -100,9 +100,18 @@ def calculate_all_indicators(stock_data: pd.DataFrame, benchmark_data: pd.DataFr
 
     # 5. 相対強度 (RS Rating)
     df['rs_rating'] = calculate_rs_rating(df, benchmark_data)
-
-    # RS Ratingのトレンドを評価するために、短期的な移動平均を追加
     df['rs_rating_ma10'] = ta.sma(df['rs_rating'], length=10)
+
+    # 6. ATR (Average True Range) とそれに基づくボラティリティ指標
+    df['atr'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+    # 価格がMA50からATRの何倍離れているかを計算
+    # ゼロ除算を避けるために、atrが0の場合はnp.nanを設定し、後で0に置換
+    df['atr_ma_distance_multiple'] = np.where(
+        df['atr'] > 0,
+        abs(df['Close'] - df['ma50']) / df['atr'],
+        0
+    )
+
 
     # NaN値を削除
     df.dropna(inplace=True)
@@ -122,8 +131,8 @@ if __name__ == '__main__':
         print(f"\n{test_ticker} の計算済み指標データ (直近5日):")
         # 表示する列を絞り込む
         display_columns = [
-            'Close', 'ma50', 'ma200', 'volume_ma50',
-            'ma50_slope', 'vwap', 'vwap_slope', 'rs_rating', 'rs_rating_ma10'
+            'Close', 'ma50', 'volume_ma50', 'ma50_slope', 'rs_rating',
+            'atr', 'atr_ma_distance_multiple'
         ]
         print(indicators_df[display_columns].tail())
     else:
