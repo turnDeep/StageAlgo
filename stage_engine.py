@@ -27,49 +27,47 @@ class StageAnalysisSystem:
 
     def _determine_current_stage(self) -> int:
         """
-        Geminiの分析に基づき、歴史的背景を考慮して現在の市場ステージを判断します。
-        1. MAの傾きで主要トレンド（ステージ2 or 4）を判断。
-        2. MAが横ばいなら、価格の歴史的位置でステージ1と3を区別する。
+        品質スコアを考慮して現在の市場ステージを判断します。
+        C判定の弱いブレイクアウトはステージ2と見なさないようにロジックを強化。
         """
         price = self.latest_data['Close']
         ma50_slope = self.latest_data['ma50_slope']
         slope_threshold = 0.002 # 傾きが「横ばい」かどうかを判断する閾値
 
-        # ステップ1: MAの傾きで主要トレンドを判断
-        if ma50_slope > slope_threshold:
-            # 傾きが明確な上昇 → ステージ2の可能性が高い
-            return 2
-
+        # ステップ1: まず明確な下降トレンド（ステージ4）を判断
         if ma50_slope < -slope_threshold:
-            # 傾きが明確な下降 → ステージ4の可能性が高い
             return 4
 
-        # ステップ2: MAが横ばいの場合、価格の歴史的背景で判断（改善版）
-        if abs(ma50_slope) <= slope_threshold:
-            # 長期（1年）と中期（150日）のデータを取得
-            history_1y = self.indicators_df.iloc[-252:-1]
-            history_150d = self.indicators_df.iloc[-151:-1]
+        # ステップ2: 次に、質の高い上昇トレンド（ステージ2）かをスコアで判断
+        # MAの傾きが上昇していることは、ステージ2の前提条件
+        if ma50_slope > slope_threshold:
+            # 移行の品質をスコアリングシステムで評価
+            transition_details = self._score_stage1_to_2_improved()
+            level = transition_details.get('level', 'C判定')
+            # B判定以上（スコア70点以上かつ確認済み）の場合のみステージ2と認定
+            if level.startswith('A') or level.startswith('B'):
+                return 2 # 本格的なステージ2と判断
 
-            if history_1y.empty or len(history_1y) < 200:
-                return 1 # データ不足時はデフォルトでステージ1
+        # ステップ3: 質の高いステージ2でもステージ4でもない場合、ステージ1か3と判断
+        # このロジックは、MAが横ばいの場合と、C判定の弱いブレイクアウト試行の両方をカバーする
+        history_1y = self.indicators_df.iloc[-252:-1]
+        history_150d = self.indicators_df.iloc[-151:-1]
 
-            high_1y = history_1y['High'].max()
-            high_150d = history_150d['High'].max() if not history_150d.empty else high_1y
+        if history_1y.empty or len(history_1y) < 200:
+            return 1 # データ不足時はデフォルトでステージ1
 
-            # 1. 長期的な底値圏か？ (1年高値から40%以上下落)
-            is_long_term_base = price < high_1y * 0.6
-            if is_long_term_base:
-                return 1 # 長期的な下落後の底固めと判断
+        high_1y = history_1y['High'].max()
+        high_150d = history_150d['High'].max() if not history_150d.empty else high_1y
 
-            # 2. 中期的な天井圏か？ (150日高値から30%未満の下落)
-            is_medium_term_top = price >= high_150d * 0.7
-            if is_medium_term_top:
-                return 3 # 高値圏での横ばいと判断
+        # 長期的な底値圏か？ (1年高値から大きく下落しているか)
+        if price < high_1y * 0.6:
+            return 1 # 長期的な下落後の底固め（ステージ1）と判断
 
-            # 上記の中間的な状態はステージ1（底固め）と見なす
-            return 1
+        # 中期的な天井圏か？ (高値圏での推移か)
+        if price >= high_150d * 0.7:
+            return 3 # 高値圏での横ばい（ステージ3）と判断
 
-        # 上記のいずれにも当てはまらない場合のデフォルト
+        # 上記の中間的な状態はステージ1（底固め）と見なす
         return 1
 
     def _score_stage1_to_2_improved(self) -> dict:
