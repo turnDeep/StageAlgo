@@ -76,17 +76,18 @@ class StageAnalysisSystem:
         """ステージ1→2（上昇期への移行）のスコアを計算します（改善版ロジック）。"""
         score = 0
         details = {}
+        total_max_score = 100 # 合計100点満点に再設計
 
-        # 1. 出来高
+        # 1. 出来高 (20点)
         volume_ratio = self.latest_data['Volume'] / self.latest_data['volume_ma50']
         if volume_ratio >= 2.5:
-            score += 25; details['出来高'] = f"A評価 ({volume_ratio:.1f}倍, 25点)"
+            score += 20; details['出来高'] = f"A評価 ({volume_ratio:.1f}倍, 20点)"
         elif volume_ratio >= 2.0:
-            score += 20; details['出来高'] = f"B評価 ({volume_ratio:.1f}倍, 20点)"
+            score += 15; details['出来高'] = f"B評価 ({volume_ratio:.1f}倍, 15点)"
         else:
             details['出来高'] = f"C評価 ({volume_ratio:.1f}倍, 0点)"
 
-        # 2. 価格ブレイク
+        # 2. 価格ブレイク (25点)
         price_50day_high = self.indicators_df['Close'].tail(51).iloc[:-1].max()
         current_close = self.latest_data['Close']
         if current_close > price_50day_high * 1.03:
@@ -96,9 +97,9 @@ class StageAnalysisSystem:
         else:
             details['価格ブレイク'] = "C評価 (0点)"
 
-        # 3. MA転換
+        # 3. MA転換 (20点)
         price_over_ma50 = self.latest_data['Close'] > self.latest_data['ma50']
-        ma50_slope_up = self.latest_data['ma50_slope'] > 0.002 # 少し傾きがあることを確認
+        ma50_slope_up = self.latest_data['ma50_slope'] > 0.002
         if price_over_ma50 and ma50_slope_up:
             score += 20; details['MA転換'] = "A評価 (価格>MA50 & 傾きが正, 20点)"
         elif price_over_ma50 or ma50_slope_up:
@@ -106,23 +107,32 @@ class StageAnalysisSystem:
         else:
             details['MA転換'] = "C評価 (0点)"
 
-        # 4. RS Rating
+        # 4. RS Rating (15点)
         rs = self.latest_data['rs_rating']
         if rs >= 85:
-            score += 15; details['RS Rating'] = f"A評価 ({rs:.0f} >= 85, 15点)"
+            score += 15; details['RS Rating'] = f"A評価 ({rs:.0f}, 15点)"
         elif rs >= 70:
-            score += 10; details['RS Rating'] = f"B評価 (70 <= {rs:.0f} < 85, 10点)"
+            score += 10; details['RS Rating'] = f"B評価 ({rs:.0f}, 10点)"
         else:
-            details['RS Rating'] = f"C評価 ({rs:.0f} < 70, 0点)"
+            details['RS Rating'] = f"C評価 ({rs:.0f}, 0点)"
 
-        # 5. 市場環境
+        # 5. ボラティリティ (ATR倍率) (15点)
+        atr_multiple = self.latest_data['atr_ma_distance_multiple']
+        if atr_multiple >= 2.0 and atr_multiple < 4.0:
+            score += 15; details['ボラティリティ'] = f"A評価 (トレンド初動 {atr_multiple:.1f}倍, 15点)"
+        elif atr_multiple >= 1.0 and atr_multiple < 2.0:
+            score += 10; details['ボラティリティ'] = f"B評価 (監視対象 {atr_multiple:.1f}倍, 10点)"
+        else:
+            details['ボラティリティ'] = f"C評価 ({atr_multiple:.1f}倍, 0点)"
+
+        # 6. 市場環境 (5点)
         is_bull_market = self.latest_benchmark_data['Close'] > self.latest_benchmark_data['ma200']
         if is_bull_market:
-            score += 10; details['市場環境'] = "強気市場 (+10点)"
+            score += 5; details['市場環境'] = "強気市場 (+5点)"
         else:
             details['市場環境'] = "弱気/中立市場 (+0点)"
 
-        # 6. 確認メカニズム
+        # 7. 確認メカニズム
         is_confirmed = False
         confirmation_status = "未確認"
         for i in range(1, 6):
@@ -149,15 +159,15 @@ class StageAnalysisSystem:
         details['確認'] = confirmation_status
 
         # 最終判定
-        if is_confirmed and score >= 90:
+        if is_confirmed and score >= 85:
             level = "A判定 (強力な移行シグナル)"
             action = "自信を持ってエントリーを検討するべき理想的なブレイクアウト。"
-        elif is_confirmed and score >= 75:
+        elif is_confirmed and score >= 70:
             level = "B判定 (移行シグナル)"
             action = "エントリーを検討。リスク管理のためポジションサイズ調整も考慮。"
         else:
             level = "C判定 (準備段階)"
-            if score >= 75 and not is_confirmed:
+            if score >= 70 and not is_confirmed:
                 action = f"ブレイクアウトの可能性あり(スコア: {score})。ただし、{confirmation_status}のため、判定は見送り。"
             else:
                 action = f"エントリーは見送り、全ての条件が揃うのを待つ (スコア: {score})。"
@@ -167,18 +177,52 @@ class StageAnalysisSystem:
     def _score_stage2_to_3(self) -> dict:
         """ステージ2→3（天井圏への移行）のスコアを計算します。"""
         score = 0
+        details = {}
+
+        # 1. 過熱感 (ATR倍率) (30点)
+        atr_multiple = self.latest_data['atr_ma_distance_multiple']
+        if atr_multiple >= 7.0:
+            score += 30; details['過熱感'] = f"A評価 (過熱ゾーン {atr_multiple:.1f}倍, 30点)"
+        elif atr_multiple >= 5.0:
+            score += 15; details['過熱感'] = f"B評価 (警戒ゾーン {atr_multiple:.1f}倍, 15点)"
+        else:
+            details['過熱感'] = f"C評価 ({atr_multiple:.1f}倍, 0点)"
+
+        # 2. 大口の売り (Distribution Day) (25点)
         recent_data = self.indicators_df.tail(20)
         down_days_high_volume = recent_data[(recent_data['Close'] < recent_data['Close'].shift(1)) & (recent_data['Volume'] > recent_data['volume_ma50'] * 1.5)]
-        if len(down_days_high_volume) >= 2: score += 30
+        if len(down_days_high_volume) >= 2:
+            score += 25; details['大口の売り'] = f"A評価 ({len(down_days_high_volume)}回, 25点)"
+        elif len(down_days_high_volume) == 1:
+            score += 10; details['大口の売り'] = f"B評価 (1回, 10点)"
+        else:
+            details['大口の売り'] = "C評価 (0点)"
+
+        # 3. 上ヒゲ (反転のサイン) (20点)
         upper_wick = self.indicators_df['High'] - self.indicators_df[['Open', 'Close']].max(axis=1)
-        if (upper_wick.tail(5) > (self.indicators_df['High'] - self.indicators_df['Low']).tail(5) * 0.5).any(): score += 25
-        if abs(self.latest_data['ma50_slope']) < 0.001: score += 20
-        if self.latest_data['rs_rating'] < self.latest_data['rs_rating_ma10']: score += 15
-        if self.latest_data['Close'] < self.latest_data['vwap']: score += 10
+        is_long_wick = (upper_wick.tail(5) > (self.indicators_df['High'] - self.indicators_df['Low']).tail(5) * 0.5).any()
+        if is_long_wick:
+            score += 20; details['上ヒゲ'] = "A評価 (長い上ヒゲを検出, 20点)"
+        else:
+            details['上ヒゲ'] = "C評価 (0点)"
+
+        # 4. MA50の平坦化 (トレンド鈍化) (15点)
+        if abs(self.latest_data['ma50_slope']) < 0.001:
+            score += 15; details['MA平坦化'] = "A評価 (トレンド鈍化, 15点)"
+        else:
+            details['MA平坦化'] = "C評価 (0点)"
+
+        # 5. RS Ratingの低下 (10点)
+        if self.latest_data['rs_rating'] < self.latest_data['rs_rating_ma10']:
+            score += 10; details['RS低下'] = "A評価 (RSが低下傾向, 10点)"
+        else:
+            details['RS低下'] = "C評価 (0点)"
+
+
         if score >= 75: level, action = "危険 (ステージ3移行が濃厚)", "ポジションの大部分の利益確定を強く推奨。"
         elif score >= 50: level, action = "警告 (トレンド鈍化)", "新規の買いは見送り、一部を利益確定。"
         else: level, action = "安全 (ステージ2継続)", "ポジションを維持し、トレンドの継続を期待する。"
-        return {"score": score, "level": level, "action": action}
+        return {"score": score, "level": level, "action": action, "details": details}
 
     def _score_stage3_to_4(self) -> dict:
         """ステージ3→4（下降期への移行）のスコアを計算します。"""
