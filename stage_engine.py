@@ -76,43 +76,43 @@ class StageAnalysisSystem:
         score = 0
         details = {}
 
-        # 1. 出来高 (20点)
+        # 1. 出来高 (25点)
         volume_ratio = self.latest_data['Volume'] / self.latest_data['volume_ma50']
         if volume_ratio >= 2.5:
-            score += 20; details['出来高'] = f"A評価 ({volume_ratio:.1f}倍, 20点)"
+            score += 25; details['出来高'] = f"A評価 ({volume_ratio:.1f}倍, 25点)"
         elif volume_ratio >= 2.0:
-            score += 15; details['出来高'] = f"B評価 ({volume_ratio:.1f}倍, 15点)"
+            score += 18; details['出来高'] = f"B評価 ({volume_ratio:.1f}倍, 18点)"
         else:
             details['出来高'] = f"C評価 ({volume_ratio:.1f}倍, 0点)"
 
-        # 2. 価格ブレイク (25点)
+        # 2. 価格 (10点)
         price_50day_high = self.indicators_df['Close'].tail(51).iloc[:-1].max()
         current_close = self.latest_data['Close']
         if current_close > price_50day_high * 1.03:
-            score += 25; details['価格ブレイク'] = "A評価 (50日高値+3%超, 25点)"
+            score += 10; details['価格'] = "A評価 (50日高値+3%超, 10点)"
         elif current_close > price_50day_high:
-            score += 20; details['価格ブレイク'] = "B評価 (50日高値更新, 20点)"
+            score += 8; details['価格'] = "B評価 (50日高値更新, 8点)"
         else:
-            details['価格ブレイク'] = "C評価 (0点)"
+            details['価格'] = "C評価 (0点)"
 
-        # 3. MA転換 (20点)
+        # 3. トレンド (15点)
         price_over_ma50 = self.latest_data['Close'] > self.latest_data['ma50']
         ma50_slope_up = self.latest_data['ma50_slope'] > 0.002
         if price_over_ma50 and ma50_slope_up:
-            score += 20; details['MA転換'] = "A評価 (価格>MA50 & 傾きが正, 20点)"
+            score += 15; details['トレンド'] = "A評価 (価格>MA50 & 傾きが正, 15点)"
         elif price_over_ma50 or ma50_slope_up:
-            score += 10; details['MA転換'] = "B評価 (どちらか一方, 10点)"
+            score += 8; details['トレンド'] = "B評価 (どちらか一方, 8点)"
         else:
-            details['MA転換'] = "C評価 (0点)"
+            details['トレンド'] = "C評価 (0点)"
 
-        # 4. RS Rating (15点)
+        # 4. 相対強度 (15点)
         rs = self.latest_data['rs_rating']
         if rs >= 85:
-            score += 15; details['RS Rating'] = f"A評価 ({rs:.0f}, 15点)"
+            score += 15; details['相対強度'] = f"A評価 ({rs:.0f}, 15点)"
         elif rs >= 70:
-            score += 10; details['RS Rating'] = f"B評価 ({rs:.0f}, 10点)"
+            score += 10; details['相対強度'] = f"B評価 ({rs:.0f}, 10点)"
         else:
-            details['RS Rating'] = f"C評価 ({rs:.0f}, 0点)"
+            details['相対強度'] = f"C評価 ({rs:.0f}, 0点)"
 
         # 5. ボラティリティ (15点)
         atr_multiple = self.latest_data['atr_ma_distance_multiple']
@@ -123,10 +123,10 @@ class StageAnalysisSystem:
         else:
             details['ボラティリティ'] = f"C評価 ({atr_multiple:.1f}倍, 0点)"
 
-        # 6. 市場環境 (5点)
+        # 6. 市場環境 (20点)
         is_bull_market = self.latest_benchmark_data['Close'] > self.latest_benchmark_data['ma200']
         if is_bull_market:
-            score += 5; details['市場環境'] = "強気市場 (+5点)"
+            score += 20; details['市場環境'] = "強気市場 (+20点)"
         else:
             details['市場環境'] = "弱気/中立市場 (+0点)"
 
