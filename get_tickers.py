@@ -37,10 +37,33 @@ def get_and_save_tickers():
 
     print(f"合計 {len(unique_tickers)} 件のユニークなティッカーが見つかりました。")
 
-    # 4. stock.csvに保存
+    # 4. 除外条件に基づいてティッカーをフィルタリング
+    print("指定された条件に基づいてティッカーをフィルタリングします...")
+    excluded_suffixes = ['.U', '.W', '.A', '.B']
+
+    initial_count = len(unique_tickers)
+
+    # 条件①：ティッカーの文字数が5文字
+    filtered_tickers = [t for t in unique_tickers if len(t) != 5]
+    print(f"文字数が5文字のティッカーを除外: {initial_count - len(filtered_tickers)} 件")
+    initial_count = len(filtered_tickers)
+
+    # 条件②：特定の接尾辞が付いている
+    filtered_tickers = [t for t in filtered_tickers if not any(s in t for s in excluded_suffixes)]
+    print(f"特定の接尾辞を持つティッカーを除外: {initial_count - len(filtered_tickers)} 件")
+    initial_count = len(filtered_tickers)
+
+    # 条件③：ティッカーの文字の中に$が入っている
+    filtered_tickers = [t for t in filtered_tickers if '$' not in t]
+    print(f"'$'を含むティッカーを除外: {initial_count - len(filtered_tickers)} 件")
+
+    print(f"フィルタリングにより {len(unique_tickers) - len(filtered_tickers)} 件のティッカーが除外されました。")
+    print(f"フィルタリング後、{len(filtered_tickers)} 件のティッカーが残りました。")
+
+    # 5. stock.csvに保存
     try:
         with open('stock.csv', 'w') as f:
-            for ticker in unique_tickers:
+            for ticker in filtered_tickers:
                 f.write(f"{ticker}\n")
         print("ティッカーリストを stock.csv に正常に保存しました。")
     except Exception as e:
