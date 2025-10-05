@@ -71,7 +71,7 @@ def analyze_stocks():
             current_stage_num = int(current_stage_str.replace('ステージ', ''))
 
             # 【修正】フィルタリング条件を改善
-            # ステージ1: スコア40点以上
+            # ステージ1: スコア50点以上
             is_stage1_candidate = (current_stage_num == 1 and score >= 50)
             
             # ステージ2: 全て含める
