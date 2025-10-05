@@ -15,71 +15,79 @@
 -   **高度なテクニカル指標**: トレンドの強さを正規化して比較可能にする「MA傾き」や、市場全体に対する個別株の強さを示す「RS Rating」など、カスタム指標を計算します。
 -   **過去データ分析**: `historical_analyzer.py` を使用して、特定の銘柄の過去のステージ移行履歴を分析することも可能です。
 
-## セットアップと実行方法
+## 実行方法
 
-### 1. 前提条件
+本ツールは、ローカル環境またはDocker環境で実行できます。
 
--   Python 3.x
--   pip
+### A) ローカル環境での実行
 
-### 2. インストール
-
-プロジェクトのルートディレクトリで、以下のコマンドを実行して必要なライブラリをインストールします。
+ローカルで実行する場合、まず依存ライブラリをインストールする必要があります。
 
 ```bash
+# 依存ライブラリのインストール
 pip install -r requirements.txt
-```
 
-### 3. 設定
-
-分析対象のティッカーリスト (`stock.csv`) は、以下のいずれかの方法で準備します。
-
-#### A) スクリプトで自動生成 (推奨)
-以下のコマンドを実行すると、DataHub.io から最新のNASDAQとNYSEの上場企業リストを取得し、統合した `stock.csv` を自動で生成します。
-```bash
+# ティッカーリストの生成
 python get_tickers.py
+
+# 分析の実行 (例: stage1or2.py)
+python stage1or2.py
 ```
 
-#### B) 手動で編集
-`stock.csv` ファイルを直接編集し、分析したいティッカーシンボルを1行に1つずつ入力することもできます。
+### B) Dockerを利用した実行
 
-**例 (`stock.csv`):**
-```csv
-NVDA
-PLTR
-OKLO
-SMCI
-```
+Dockerを利用すると、環境構築なしで各スクリプトを実行できます。
 
-### 4. 実行
-
-#### 最新のステージ分析
-
-以下のコマンドで、`stock.csv` に記載された全銘柄の最新ステージ分析を実行します。
-
+#### 1. Dockerイメージのビルド
+まず、プロジェクトのルートディレクトリで以下のコマンドを実行し、Dockerイメージをビルドします。
 ```bash
-python main.py
+docker build -t stock-analysis-app .
 ```
 
-#### 過去のステージ移行分析
+#### 2. Dockerコンテナでのスクリプト実行
+コンテナを実行する際は、`-v "$(pwd)":/app` オプションを使って、ホストのカレントディレクトリとコンテナ内の `/app` ディレクトリを同期させます。これにより、コンテナ内で生成されたファイル（`stock.csv` や `stage1or2.csv`）が、ホスト側にも保存されます。
 
-特定の銘柄について、過去1年間のステージがどのように変化したかを確認したい場合は、`historical_analyzer.py` を実行します。（注意: 対象ティッカーは現在スクリプト内で直接指定されています）
-
+**ステップ1: ティッカーリストの準備**
+`get_tickers.py` を実行し、分析対象のティッカーリスト `stock.csv` を生成します。
 ```bash
-python historical_analyzer.py
+docker run --rm -v "$(pwd)":/app stock-analysis-app python get_tickers.py
+```
+このコマンドにより、`stock.csv` がカレントディレクトリに作成されます。
+
+**ステップ2: ステージ分析の実行**
+`stock.csv` を基に、各種分析スクリプトを実行します。
+
+- **A) 有望な銘柄を抽出しCSVに出力**
+  `stage1or2.py` を実行すると、分析結果が `stage1or2.csv` として保存されます。
+  ```bash
+  docker run --rm -v "$(pwd)":/app stock-analysis-app python stage1or2.py
+  ```
+
+- **B) 全銘柄の最新ステージを分析**
+  `main.py` は、全銘柄の分析結果をコンソールに直接出力します。
+  ```bash
+  docker run --rm -v "$(pwd)":/app stock-analysis-app python main.py
+  ```
+
+**ステップ3: 個別銘柄の過去分析 (オプション)**
+`historical_analyzer.py` を使って、特定の銘柄（例: AAPL）の過去のステージ移行履歴を分析します。
+```bash
+docker run --rm -v "$(pwd)":/app stock-analysis-app python historical_analyzer.py AAPL
 ```
 
 ## プロジェクト構造
 
 ```
 .
-├── main.py                   # メインプログラム。stock.csvを読み込み分析を実行
-├── get_tickers.py            # NASDAQとNYSEのティッカーを取得しstock.csvを生成
+├── Dockerfile                # Docker環境を定義
+├── main.py                   # 全銘柄の最新ステージを分析
+├── stage1or2.py              # ステージ1, 2の有望銘柄を抽出しCSV出力
+├── get_tickers.py            # NASDAQ/NYSEのティッカーを取得しstock.csvを生成
+├── historical_analyzer.py    # 個別銘柄の過去のステージ移行を分析
 ├── stock.csv                 # 分析対象のティッカーリスト
-├── data_fetcher.py           # yfinanceから株価データを取得
-├── indicators.py             # テクニカル指標を計算
-├── stage_engine.py           # ステージ判定とスコアリングのコアロジック
-├── historical_analyzer.py    # 過去のステージ移行を分析するスクリプト
+├── data_fetcher.py           # 株価データ取得モジュール
+├── indicators.py             # テクニカル指標計算モジュール
+├── stage_engine.py           # ステージ判定ロジックのコアモジュール
 ├── requirements.txt          # 依存ライブラリ
 └── README.md                 # このファイル
 ```
