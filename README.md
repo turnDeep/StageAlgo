@@ -36,21 +36,15 @@ python stage1or2.py
 
 ### B) Dockerを利用した実行
 
-Dockerを利用すると、環境構築なしで各スクリプトを実行できます。
+DockerとDocker Composeを利用すると、OSに依存しない簡単なコマンドで環境を構築し、各スクリプトを実行できます。
 
-#### 1. Dockerイメージのビルド
-まず、プロジェクトのルートディレクトリで以下のコマンドを実行し、Dockerイメージをビルドします。
-```bash
-docker build -t stock-analysis-app .
-```
-
-#### 2. Dockerコンテナでのスクリプト実行
-コンテナを実行する際は、`-v "$(pwd)":/app` オプションを使って、ホストのカレントディレクトリとコンテナ内の `/app` ディレクトリを同期させます。これにより、コンテナ内で生成されたファイル（`stock.csv` や `stage1or2.csv`）が、ホスト側にも保存されます。
+#### 1. スクリプトの実行
+プロジェクトのルートディレクトリで、以下の`docker-compose run`コマンドを使用します。初回実行時に、必要なDockerイメージが自動的にビルドされます。
 
 **ステップ1: ティッカーリストの準備**
 `get_tickers.py` を実行し、分析対象のティッカーリスト `stock.csv` を生成します。
 ```bash
-docker run --rm -v "$(pwd)":/app stock-analysis-app python get_tickers.py
+docker-compose run --rm app python get_tickers.py
 ```
 このコマンドにより、`stock.csv` がカレントディレクトリに作成されます。
 
@@ -60,19 +54,29 @@ docker run --rm -v "$(pwd)":/app stock-analysis-app python get_tickers.py
 - **A) 有望な銘柄を抽出しCSVに出力**
   `stage1or2.py` を実行すると、分析結果が `stage1or2.csv` として保存されます。
   ```bash
-  docker run --rm -v "$(pwd)":/app stock-analysis-app python stage1or2.py
+  docker-compose run --rm app python stage1or2.py
   ```
 
 - **B) 全銘柄の最新ステージを分析**
   `main.py` は、全銘柄の分析結果をコンソールに直接出力します。
   ```bash
-  docker run --rm -v "$(pwd)":/app stock-analysis-app python main.py
+  docker-compose run --rm app python main.py
   ```
 
 **ステップ3: 個別銘柄の過去分析 (オプション)**
 `historical_analyzer.py` を使って、特定の銘柄（例: AAPL）の過去のステージ移行履歴を分析します。
 ```bash
-docker run --rm -v "$(pwd)":/app stock-analysis-app python historical_analyzer.py AAPL
+docker-compose run --rm app python historical_analyzer.py AAPL
+```
+
+#### 2. コンテナへのアクセス (オプション)
+コンテナをバックグラウンドで起動し、中に入って作業することもできます。
+```bash
+# コンテナをバックグラウンドで起動
+docker-compose up -d
+
+# 起動したコンテナ内でbashを起動
+docker-compose exec app bash
 ```
 
 ## プロジェクト構造
