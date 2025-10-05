@@ -6,14 +6,10 @@ class StageAnalysisSystem:
     """
     Stan Weinsteinのステージ分析理論に基づき、株式のステージを分析し、
     ステージ移行のスコアリングを行うシステム。
+    
+    【修正版】ステージ2の検出ロジックを改善
     """
     def __init__(self, indicators_df: pd.DataFrame, ticker: str, benchmark_indicators_df: pd.DataFrame):
-        """
-        Args:
-            indicators_df (pd.DataFrame): テクニカル指標が計算済みの株価データ。
-            ticker (str): 分析対象のティッカーシンボル。
-            benchmark_indicators_df (pd.DataFrame): ベンチマークの指標計算済みデータ。
-        """
         if indicators_df.empty:
             raise ValueError("指標データフレームが空です。分析を実行できません。")
 
@@ -27,54 +23,58 @@ class StageAnalysisSystem:
 
     def _determine_current_stage(self) -> int:
         """
-        品質スコアを考慮して現在の市場ステージを判断します。
-        C判定の弱いブレイクアウトはステージ2と見なさないようにロジックを強化。
+        【改善版】現在の市場ステージを判断
+        - ステージ2判定の条件を緩和
+        - スコアベースの判定も追加
         """
         price = self.latest_data['Close']
         ma50_slope = self.latest_data['ma50_slope']
-        slope_threshold = 0.002 # 傾きが「横ばい」かどうかを判断する閾値
+        slope_threshold = 0.0015  # 閾値を少し緩和（0.002 → 0.0015）
 
-        # ステップ1: まず明確な下降トレンド（ステージ4）を判断
+        # ステップ1: 明確な下降トレンド（ステージ4）
         if ma50_slope < -slope_threshold:
             return 4
 
-        # ステップ2: 次に、質の高い上昇トレンド（ステージ2）かをスコアで判断
-        # MAの傾きが上昇していることは、ステージ2の前提条件
+        # ステップ2: 上昇トレンド（ステージ2）の判定を改善
         if ma50_slope > slope_threshold:
-            # 移行の品質をスコアリングシステムで評価
             transition_details = self._score_stage1_to_2_improved()
             level = transition_details.get('level', 'C判定')
-            # B判定以上（スコア70点以上かつ確認済み）の場合のみステージ2と認定
+            score = transition_details.get('score', 0)
+            
+            # 【修正1】スコアが非常に高い場合は確認なしでもステージ2と認定
+            if score >= 80:  # 80点以上なら確認なしでOK
+                return 2
+            
+            # 【修正2】B判定以上ならステージ2
             if level.startswith('A') or level.startswith('B'):
-                return 2 # 本格的なステージ2と判断
+                return 2
 
-        # ステップ3: 質の高いステージ2でもステージ4でもない場合、ステージ1か3と判断
-        # このロジックは、MAが横ばいの場合と、C判定の弱いブレイクアウト試行の両方をカバーする
+        # ステップ3: それ以外はステージ1か3
         history_1y = self.indicators_df.iloc[-252:-1]
         history_150d = self.indicators_df.iloc[-151:-1]
 
         if history_1y.empty or len(history_1y) < 200:
-            return 1 # データ不足時はデフォルトでステージ1
+            return 1
 
         high_1y = history_1y['High'].max()
         high_150d = history_150d['High'].max() if not history_150d.empty else high_1y
 
-        # 長期的な底値圏か？ (1年高値から大きく下落しているか)
         if price < high_1y * 0.6:
-            return 1 # 長期的な下落後の底固め（ステージ1）と判断
+            return 1
 
-        # 中期的な天井圏か？ (高値圏での推移か)
         if price >= high_150d * 0.7:
-            return 3 # 高値圏での横ばい（ステージ3）と判断
+            return 3
 
-        # 上記の中間的な状態はステージ1（底固め）と見なす
         return 1
 
     def _score_stage1_to_2_improved(self) -> dict:
-        """ステージ1→2（上昇期への移行）のスコアを計算します（改善版ロジック）。"""
+        """
+        【改善版】ステージ1→2のスコア計算
+        - 確認メカニズムを現実的に修正
+        - 探索範囲を拡大
+        """
         score = 0
         details = {}
-        total_max_score = 100 # 合計100点満点に再設計
 
         # 1. 出来高 (20点)
         volume_ratio = self.latest_data['Volume'] / self.latest_data['volume_ma50']
@@ -114,7 +114,7 @@ class StageAnalysisSystem:
         else:
             details['RS Rating'] = f"C評価 ({rs:.0f}, 0点)"
 
-        # 5. ボラティリティ (ATR倍率) (15点)
+        # 5. ボラティリティ (15点)
         atr_multiple = self.latest_data['atr_ma_distance_multiple']
         if atr_multiple >= 2.0 and atr_multiple < 4.0:
             score += 15; details['ボラティリティ'] = f"A評価 (トレンド初動 {atr_multiple:.1f}倍, 15点)"
@@ -130,45 +130,58 @@ class StageAnalysisSystem:
         else:
             details['市場環境'] = "弱気/中立市場 (+0点)"
 
-        # 7. 確認メカニズム
+        # 7. 【改善版】確認メカニズム
         is_confirmed = False
         confirmation_status = "未確認"
-        for i in range(1, 6):
-            if len(self.indicators_df) < (50 + i + 1): continue
+        
+        # 【修正1】探索範囲を5日→15日に拡大
+        for i in range(1, 16):
+            if len(self.indicators_df) < (50 + i + 1):
+                continue
 
             breakout_day_index = -(i)
             breakout_day_data = self.indicators_df.iloc[breakout_day_index]
             historical_data = self.indicators_df.iloc[breakout_day_index - 50 : breakout_day_index]
-            if historical_data.empty: continue
+            
+            if historical_data.empty:
+                continue
 
             price_50d_high_before = historical_data['Close'].max()
 
             if breakout_day_data['Close'] > price_50d_high_before:
                 days_since = i - 1
+                
                 if days_since >= 2:
                     days_to_confirm_df = self.indicators_df.iloc[-days_since:]
-                    if (days_to_confirm_df['Close'] > price_50d_high_before).all():
+                    
+                    # 【修正2】全日維持 → 80%以上の日で維持に緩和
+                    days_above = (days_to_confirm_df['Close'] > price_50d_high_before * 0.98).sum()
+                    total_days = len(days_to_confirm_df)
+                    
+                    if days_above / total_days >= 0.8:  # 80%以上の日で維持
                         is_confirmed = True
-                        confirmation_status = f"確認済み (ブレイクアウト後{days_since}日維持)"
+                        confirmation_status = f"確認済み (ブレイクアウト後{days_since}日、{days_above}/{total_days}日維持)"
                         break
                 else:
                     confirmation_status = f"未確認 (ブレイクアウト後{days_since}日)"
-                    break
+                    
         details['確認'] = confirmation_status
 
-        # 最終判定
-        if is_confirmed and score >= 85:
+        # 【修正3】最終判定ロジックの改善
+        if score >= 85:
+            # 85点以上なら確認不要でA判定
             level = "A判定 (強力な移行シグナル)"
             action = "自信を持ってエントリーを検討するべき理想的なブレイクアウト。"
         elif is_confirmed and score >= 70:
             level = "B判定 (移行シグナル)"
             action = "エントリーを検討。リスク管理のためポジションサイズ調整も考慮。"
+        elif score >= 75 and not is_confirmed:
+            # スコアは高いが未確認の場合は「B-判定」
+            level = "B-判定 (有望だが確認待ち)"
+            action = f"高スコア({score}点)だが{confirmation_status}。慎重にエントリー検討。"
         else:
             level = "C判定 (準備段階)"
-            if score >= 70 and not is_confirmed:
-                action = f"ブレイクアウトの可能性あり(スコア: {score})。ただし、{confirmation_status}のため、判定は見送り。"
-            else:
-                action = f"エントリーは見送り、全ての条件が揃うのを待つ (スコア: {score})。"
+            action = f"エントリーは見送り、全ての条件が揃うのを待つ (スコア: {score})。"
 
         return {"score": score, "level": level, "action": action, "details": details}
 
@@ -177,7 +190,7 @@ class StageAnalysisSystem:
         score = 0
         details = {}
 
-        # 1. 過熱感 (ATR倍率) (30点)
+        # 1. 過熱感 (30点)
         atr_multiple = self.latest_data['atr_ma_distance_multiple']
         if atr_multiple >= 7.0:
             score += 30; details['過熱感'] = f"A評価 (過熱ゾーン {atr_multiple:.1f}倍, 30点)"
@@ -186,7 +199,7 @@ class StageAnalysisSystem:
         else:
             details['過熱感'] = f"C評価 ({atr_multiple:.1f}倍, 0点)"
 
-        # 2. 大口の売り (Distribution Day) (25点)
+        # 2. 大口の売り (25点)
         recent_data = self.indicators_df.tail(20)
         down_days_high_volume = recent_data[(recent_data['Close'] < recent_data['Close'].shift(1)) & (recent_data['Volume'] > recent_data['volume_ma50'] * 1.5)]
         if len(down_days_high_volume) >= 2:
@@ -196,7 +209,7 @@ class StageAnalysisSystem:
         else:
             details['大口の売り'] = "C評価 (0点)"
 
-        # 3. 上ヒゲ (反転のサイン) (20点)
+        # 3. 上ヒゲ (20点)
         upper_wick = self.indicators_df['High'] - self.indicators_df[['Open', 'Close']].max(axis=1)
         is_long_wick = (upper_wick.tail(5) > (self.indicators_df['High'] - self.indicators_df['Low']).tail(5) * 0.5).any()
         if is_long_wick:
@@ -204,7 +217,7 @@ class StageAnalysisSystem:
         else:
             details['上ヒゲ'] = "C評価 (0点)"
 
-        # 4. MA50の平坦化 (トレンド鈍化) (15点)
+        # 4. MA50の平坦化 (15点)
         if abs(self.latest_data['ma50_slope']) < 0.001:
             score += 15; details['MA平坦化'] = "A評価 (トレンド鈍化, 15点)"
         else:
@@ -215,7 +228,6 @@ class StageAnalysisSystem:
             score += 10; details['RS低下'] = "A評価 (RSが低下傾向, 10点)"
         else:
             details['RS低下'] = "C評価 (0点)"
-
 
         if score >= 75: level, action = "危険 (ステージ3移行が濃厚)", "ポジションの大部分の利益確定を強く推奨。"
         elif score >= 50: level, action = "警告 (トレンド鈍化)", "新規の買いは見送り、一部を利益確定。"
@@ -262,34 +274,3 @@ class StageAnalysisSystem:
             transition_analysis = self._score_stage4_to_1()
             transition_analysis['target_transition'] = "ステージ4 → 1"
         return {"ticker": self.ticker, "analysis_date": self.analysis_date, "current_stage": f"ステージ{current_stage}", "transition_analysis": transition_analysis}
-
-if __name__ == '__main__':
-    test_ticker = 'CAN'
-    print(f"--- {test_ticker} のステージ分析を開始 ---")
-    stock_df, benchmark_df = fetch_stock_data(test_ticker)
-    if stock_df is not None and benchmark_df is not None:
-        stock_indicators_df = calculate_all_indicators(stock_df, benchmark_df)
-        # RS Rating計算のために、ベンチマークの'Close'のみを持つDataFrameを渡す
-        benchmark_indicators_df = calculate_all_indicators(benchmark_df, benchmark_df.copy())
-
-        if not stock_indicators_df.empty and not benchmark_indicators_df.empty:
-            analyzer = StageAnalysisSystem(stock_indicators_df, test_ticker, benchmark_indicators_df)
-            result = analyzer.analyze()
-
-            print(f"ティッカー: {result['ticker']}")
-            print(f"分析日: {result['analysis_date']}")
-            print(f"現在の推定ステージ: {result['current_stage']}")
-            print("\n--- 移行分析 ---")
-            analysis = result['transition_analysis']
-            print(f"分析対象: {analysis['target_transition']}")
-            print(f"スコア: {analysis['score']} / 100")
-            print(f"判定: {analysis['level']}")
-            print(f"推奨アクション: {analysis['action']}")
-            if 'details' in analysis:
-                print("\n[スコア詳細]")
-                for key, value in analysis['details'].items():
-                    print(f"  - {key}: {value}")
-        else:
-            print("指標計算後にデータが空になりました。")
-    else:
-        print(f"{test_ticker} のデータ取得に失敗しました。")
