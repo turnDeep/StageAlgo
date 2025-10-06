@@ -289,20 +289,33 @@ def check_code33(metrics_df: pd.DataFrame, financial_data: Dict) -> Tuple[bool, 
 
 
 def check_pattern1(metrics_df: pd.DataFrame) -> Tuple[bool, Dict]:
-    """パターン①: 赤→黒→黒→黒"""
+    """
+    パターン①: 赤→黒→黒→黒
+    判定条件：黒字3期の「絶対値」が加速度的に増加
+    
+    赤字→黒字転換があるため、成長率ではなく絶対値の加速を評価：
+    - Latest-2, Latest-1, Latest の3期すべてが黒字
+    - 増加幅が加速: (Latest-1 - Latest-2) < (Latest - Latest-1)
+    - または、2階差分が正: Δ²EPS > 0
+    """
     details = {'pattern': 'Pattern1', 'description': '赤→黒→黒→黒', 'match': False}
     
     try:
         eps = metrics_df['EPS'].values
         
+        # Latest-3が赤字、Latest-2/Latest-1/Latestが黒字
         if eps[3] < 0 and eps[2] > 0 and eps[1] > 0 and eps[0] > 0:
-            g1 = calculate_growth_rate(eps[2], eps[3])
-            g2 = calculate_growth_rate(eps[1], eps[2])
-            g3 = calculate_growth_rate(eps[0], eps[1])
+            # 方法1：増加幅が加速しているか
+            delta1 = eps[2] - eps[3]  # Latest-2 vs Latest-3（赤→黒の変化）
+            delta2 = eps[1] - eps[2]  # Latest-1 vs Latest-2（黒字の増加）
+            delta3 = eps[0] - eps[1]  # Latest vs Latest-1（黒字の増加）
             
-            if g2 > 0 and g3 > 0 and g3 > g2:
+            # 黒字期間の増加幅が加速（delta3 > delta2）
+            # かつ、両方とも正の増加
+            if delta2 > 0 and delta3 > 0 and delta3 > delta2:
                 details['match'] = True
-                details['growth_rates'] = [g3, g2, g1]
+                details['delta_acceleration'] = [delta3, delta2, delta1]
+                details['acceleration_ratio'] = delta3 / delta2 if delta2 > 0 else 0
                 
         return details['match'], details
         
@@ -311,20 +324,35 @@ def check_pattern1(metrics_df: pd.DataFrame) -> Tuple[bool, Dict]:
 
 
 def check_pattern2(metrics_df: pd.DataFrame) -> Tuple[bool, Dict]:
-    """パターン②: 赤→赤→黒→黒"""
+    """
+    パターン②: 赤→赤→黒→黒
+    判定条件：3期連続で改善幅が加速
+    
+    各期の改善幅：
+    - delta1 = Latest-2 - Latest-3（赤字縮小幅）
+    - delta2 = Latest-1 - Latest-2（黒字転換時の改善）
+    - delta3 = Latest - Latest-1（黒字増加幅）
+    
+    加速判定：delta1 < delta2 < delta3
+    """
     details = {'pattern': 'Pattern2', 'description': '赤→赤→黒→黒', 'match': False}
     
     try:
         eps = metrics_df['EPS'].values
         
+        # Latest-3/Latest-2が赤字、Latest-1/Latestが黒字
         if eps[3] < 0 and eps[2] < 0 and eps[1] > 0 and eps[0] > 0:
-            loss_reduction = abs(eps[2]) < abs(eps[3])
-            profit_growth = eps[0] > eps[1]
+            # 各期の改善幅を計算
+            delta1 = eps[2] - eps[3]  # 赤字縮小幅
+            delta2 = eps[1] - eps[2]  # 黒字転換時の改善
+            delta3 = eps[0] - eps[1]  # 黒字増加幅
             
-            if loss_reduction and profit_growth:
-                details['match'] = True
-                details['loss_reduction_rate'] = calculate_growth_rate(eps[2], eps[3])
-                details['profit_growth_rate'] = calculate_growth_rate(eps[0], eps[1])
+            # 3期連続で改善幅が加速
+            if delta1 > 0 and delta2 > 0 and delta3 > 0:
+                if delta2 > delta1 and delta3 > delta2:
+                    details['match'] = True
+                    details['improvement_deltas'] = [delta3, delta2, delta1]
+                    details['acceleration_confirmed'] = True
                 
         return details['match'], details
         
@@ -333,20 +361,43 @@ def check_pattern2(metrics_df: pd.DataFrame) -> Tuple[bool, Dict]:
 
 
 def check_pattern3(metrics_df: pd.DataFrame) -> Tuple[bool, Dict]:
-    """パターン③: 赤→赤→赤→黒/赤"""
+    """
+    パターン③: 赤→赤→赤→黒/赤
+    判定条件：赤字3期（Latest-3, Latest-2, Latest-1）の赤字幅縮小率が連続で加速
+    
+    縮小率の計算：
+    - r1 = (|Latest-3| - |Latest-2|) / |Latest-3|
+    - r2 = (|Latest-2| - |Latest-1|) / |Latest-2|
+    
+    Latestが黒字の場合は追加ボーナス
+    
+    加速判定：r2 > r1（両方とも正）
+    """
     details = {'pattern': 'Pattern3', 'description': '赤→赤→赤→黒/赤', 'match': False}
     
     try:
         eps = metrics_df['EPS'].values
         
+        # Latest-3/Latest-2/Latest-1が赤字
         if eps[3] < 0 and eps[2] < 0 and eps[1] < 0:
-            r1 = calculate_growth_rate(eps[2], eps[3])
-            r2 = calculate_growth_rate(eps[1], eps[2])
+            # 赤字幅縮小率を計算
+            r1 = calculate_growth_rate(eps[2], eps[3])  # Latest-2 vs Latest-3
+            r2 = calculate_growth_rate(eps[1], eps[2])  # Latest-1 vs Latest-2
             
+            # 縮小率が加速（r2 > r1 > 0）
             if r1 > 0 and r2 > 0 and r2 > r1:
                 details['match'] = True
                 details['reduction_rates'] = [r2, r1]
                 details['latest_status'] = 'Black' if eps[0] > 0 else 'Red'
+                
+                # Latestも赤字の場合、さらに加速しているか確認
+                if eps[0] < 0:
+                    r3 = calculate_growth_rate(eps[0], eps[1])
+                    if r3 > 0:
+                        details['reduction_rates'].insert(0, r3)
+                        # 3期連続加速の確認
+                        if r3 > r2:
+                            details['three_period_acceleration'] = True
                 
         return details['match'], details
         
