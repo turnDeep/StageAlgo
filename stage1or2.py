@@ -96,13 +96,17 @@ def analyze_stocks():
                 else:
                     priority = 3
 
+                # 過熱感を取得
+                overheat = stock_indicators_df['atr_ma_distance_multiple'].iloc[-1]
+
                 results.append({
                     'Priority': priority,  # 内部的なソート用
                     'Ticker': ticker,
                     'Current Stage': current_stage_str,
                     'Stage Start Date': start_date,
                     'Score': score,
-                    'Judgment': level,
+                    'Overheat': f"{overheat:.2f}",
+                    'Judgement': level,
                     'Action': transition_analysis.get('action', 'N/A')
                 })
 
