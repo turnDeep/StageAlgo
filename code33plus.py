@@ -517,17 +517,27 @@ def main():
     print("EPSはNet Incomeから計算しています\n")
     
     try:
-        with open('stock.csv', 'r', encoding='utf-8-sig') as f:
-            tickers = [line.strip() for line in f if line.strip()]
-        print(f"{len(tickers)}銘柄を読み込みました。")
+        # stock.csvをpandasで読み込む
+        tickers_df = pd.read_csv('stock.csv', encoding='utf-8-sig')
+        if 'Ticker' not in tickers_df.columns or 'Exchange' not in tickers_df.columns:
+            print("エラー: stock.csv に 'Ticker' または 'Exchange' 列が見つかりません。")
+            return
+
+        tickers_to_analyze = tickers_df['Ticker'].dropna().astype(str).tolist()
+        print(f"{len(tickers_to_analyze)}銘柄を読み込みました。")
+
     except FileNotFoundError:
         print("エラー: stock.csvが見つかりません。")
         return
-    
+    except Exception as e:
+        print(f"エラー: stock.csv の読み込み中に予期せぬエラーが発生しました: {e}")
+        return
+
     results = []
     print("\n分析を開始します...\n")
     
-    for ticker in tqdm(tickers, desc="銘柄分析中"):
+    # DataFrameからティッカーリストを取得して分析
+    for ticker in tqdm(tickers_df['Ticker'], desc="銘柄分析中"):
         result = analyze_ticker(ticker)
         if result:
             results.append(result)
@@ -542,6 +552,9 @@ def main():
     
     df = pd.DataFrame(results)
     
+    # 元のtickers_dfとマージして取引所情報を付与
+    df = pd.merge(df, tickers_df, left_on='ticker', right_on='Ticker', how='left')
+
     def get_pattern_str(row):
         patterns = []
         if row['code33_enhanced']:
@@ -591,6 +604,7 @@ def main():
     df['Priority'] = df.apply(calculate_priority, axis=1)
     df = df.sort_values('Priority', ascending=False)
     
+    # CSV出力用のDataFrame
     output_df = df[[
         'ticker', 'Patterns', 'Priority',
         'eps_latest', 'eps_latest_1', 'eps_latest_2', 'eps_latest_3',
@@ -605,8 +619,29 @@ def main():
         'Revenue_Growing', 'CF_Positive', 'Margin_Improving'
     ]
     
+    # CSVファイルに保存
     output_df.to_csv('code33plus_results.csv', index=False, encoding='utf-8-sig')
-    
+    print(f"\n結果を code33plus_results.csv に保存しました。")
+
+    # TradingView用のTXTファイルを作成
+    if not df.empty:
+        # 'Exchange'列と'ticker'列が存在することを確認
+        if 'Exchange' in df.columns and 'ticker' in df.columns:
+            # NaNが含まれている可能性があるため、dropnaで除外
+            tv_df = df.dropna(subset=['Exchange', 'ticker'])
+            tradingview_list = [f"{row['Exchange']}:{row['ticker']}" for _, row in tv_df.iterrows()]
+            tradingview_str = ",".join(tradingview_list)
+
+            try:
+                with open('code33plus_tradingview.txt', 'w', encoding='utf-8') as f:
+                    f.write(tradingview_str)
+                print(f"TradingView用のティッカーリストを code33plus_tradingview.txt に保存しました。")
+            except Exception as e:
+                print(f"\nエラー: TradingView用ファイルの書き込み中にエラーが発生しました: {e}")
+        else:
+            print("\n警告: 'Exchange'または'ticker'列が結果にないため、TradingViewファイルは作成されませんでした。")
+
+    # サマリーを表示
     print(f"\n{'=' * 60}")
     print(f"分析完了！ {len(df)}銘柄が条件に合致しました。")
     print(f"{'=' * 60}")
@@ -616,7 +651,6 @@ def main():
     print(f"Pattern2該当: {df['pattern2'].sum()}銘柄")
     print(f"Pattern3該当: {df['pattern3'].sum()}銘柄")
     print(f"Pattern4該当: {df['pattern4'].sum()}銘柄")
-    print(f"\n結果をcode33plus_results.csvに保存しました。")
     
     print(f"\n{'=' * 60}")
     print("Top 10 優先銘柄:")

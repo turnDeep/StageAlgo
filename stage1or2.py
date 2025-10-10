@@ -29,15 +29,22 @@ def find_current_stage_start_date(ticker, stock_indicators_df, benchmark_indicat
 
 def analyze_stocks():
     """
-    【改善版】stock.csvの銘柄を分析し、条件に合うものをCSVに出力する。
+    【改善版】stock.csvの銘柄を分析し、条件に合うものをCSVとTXTに出力する。
     - B-判定も含めるように修正
     - ステージ2の銘柄を確実に抽出
+    - TradingView用のTXTファイルも生成
     """
     try:
-        with open('stock.csv', 'r', encoding='utf-8-sig') as f:
-            tickers = [line.strip() for line in f if line.strip()]
+        tickers_df = pd.read_csv('stock.csv', encoding='utf-8-sig')
+        if 'Ticker' not in tickers_df.columns or 'Exchange' not in tickers_df.columns:
+            print("エラー: stock.csv に 'Ticker' または 'Exchange' 列が見つかりません。")
+            return
+        tickers = tickers_df['Ticker'].dropna().astype(str).tolist()
     except FileNotFoundError:
         print("エラー: stock.csvが見つかりません。")
+        return
+    except Exception as e:
+        print(f"エラー: stock.csv の読み込み中に予期せぬエラーが発生しました: {e}")
         return
 
     print("ベンチマーク(SPY)のデータを取得中...")
@@ -70,14 +77,8 @@ def analyze_stocks():
 
             current_stage_num = int(current_stage_str.replace('ステージ', ''))
 
-            # 【修正】フィルタリング条件を改善
-            # ステージ1: スコア50点以上
             is_stage1_candidate = (current_stage_num == 1 and score >= 50)
-            
-            # ステージ2: 全て含める
             is_stage2 = (current_stage_num == 2)
-            
-            # 【追加】ステージ1でも高スコア（70点以上）またはB-判定の銘柄を優先抽出
             is_high_potential_stage1 = (
                 current_stage_num == 1 and 
                 (score >= 70 or 'B-' in level or 'B判定' in level)
@@ -88,7 +89,6 @@ def analyze_stocks():
                     ticker, stock_indicators_df, benchmark_indicators_df, current_stage_num
                 )
 
-                # 優先度を設定（ソート用）
                 if is_stage2:
                     priority = 1
                 elif is_high_potential_stage1:
@@ -96,11 +96,10 @@ def analyze_stocks():
                 else:
                     priority = 3
 
-                # 過熱感を取得
                 overheat = stock_indicators_df['atr_ma_distance_multiple'].iloc[-1]
 
                 results.append({
-                    'Priority': priority,  # 内部的なソート用
+                    'Priority': priority,
                     'Ticker': ticker,
                     'Current Stage': current_stage_str,
                     'Stage Start Date': start_date,
@@ -111,23 +110,39 @@ def analyze_stocks():
                 })
 
         except Exception as e:
-            # エラーは静かにスキップ（tqdmの表示を乱さない）
             continue
 
     if results:
         df = pd.DataFrame(results)
-        # 優先度でソート（ステージ2が最上位）
+        # 元のtickers_dfとマージして取引所情報を付与
+        df = pd.merge(df, tickers_df, on='Ticker', how='left')
+
         df = df.sort_values(['Priority', 'Score'], ascending=[True, False])
-        # Priority列は出力から除外
-        df = df.drop('Priority', axis=1)
         
-        df.to_csv('stage1or2.csv', index=False, encoding='utf-8-sig')
+        # CSV出力用に列を整理
+        output_df = df.drop('Priority', axis=1)
+
+        output_df.to_csv('stage1or2.csv', index=False, encoding='utf-8-sig')
+
+        print(f"\n分析完了。{len(output_df)}件の結果をstage1or2.csvに出力しました。")
+
+        # TradingView用のTXTファイルを作成
+        if not df.empty and 'Exchange' in df.columns:
+            tv_df = df.dropna(subset=['Exchange', 'Ticker'])
+            tradingview_list = [f"{row['Exchange']}:{row['Ticker']}" for _, row in tv_df.iterrows()]
+            tradingview_str = ",".join(tradingview_list)
+
+            try:
+                with open('stage1or2_tradingview.txt', 'w', encoding='utf-8') as f:
+                    f.write(tradingview_str)
+                print(f"TradingView用のティッカーリストを stage1or2_tradingview.txt に保存しました。")
+            except Exception as e:
+                print(f"\nエラー: TradingView用ファイルの書き込み中にエラーが発生しました: {e}")
         
         # 統計情報を表示
         stage2_count = len(df[df['Current Stage'] == 'ステージ2'])
         stage1_count = len(df[df['Current Stage'] == 'ステージ1'])
         
-        print(f"\n分析完了。{len(df)}件の結果をstage1or2.csvに出力しました。")
         print(f"  - ステージ2: {stage2_count}件")
         print(f"  - ステージ1（有望株）: {stage1_count}件")
     else:
