@@ -70,9 +70,15 @@ def main():
     メインの実行関数。stock.csvからティッカーを読み込み、分析を実行します。
     """
     try:
-        # 'utf-8-sig' を使ってBOMを処理し、各行からティッカーを読み込む
-        with open('stock.csv', 'r', encoding='utf-8-sig') as f:
-            tickers_to_analyze = [line.strip() for line in f if line.strip()]
+        # stock.csvをpandasで読み込む
+        tickers_df = pd.read_csv('stock.csv', encoding='utf-8-sig')
+
+        # 'Ticker'列が存在するか確認し、ティッカーリストを取得
+        if 'Ticker' not in tickers_df.columns:
+            print("エラー: stock.csv に 'Ticker' 列が見つかりません。")
+            return
+
+        tickers_to_analyze = tickers_df['Ticker'].dropna().astype(str).tolist()
 
         if not tickers_to_analyze:
             print("エラー: stock.csv が空か、有効なティッカーが含まれていません。")
