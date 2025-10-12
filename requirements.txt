@@ -1,0 +1,7 @@
+yfinance
+curl-cffi
+pandas
+numpy
+pandas-ta
+scipy
+tqdm
