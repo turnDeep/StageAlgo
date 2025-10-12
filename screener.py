@@ -1,6 +1,6 @@
 """
 統合スクリーニングシステム
-全銘柄を分析してStage 1/2候補を抽出
+A+評価かつoverheat≥2の厳選銘柄のみ抽出
 """
 import pandas as pd
 import numpy as np
@@ -57,47 +57,50 @@ def analyze_single_ticker(args):
         scorer = ScoringSystem(indicators_df, ticker, benchmark_df)
         result = scorer.comprehensive_analysis()
         
-        # Stage 1または2の候補のみ
+        # 厳格なフィルター条件
         stage = result.get('stage', 0)
         score = result.get('total_score', 0)
+        grade = result.get('grade', '')
         
-        # フィルター条件
-        is_stage1_candidate = (stage == 1 and score >= 50)
-        is_stage2 = (stage == 2)
-        is_high_potential_stage1 = (stage == 1 and score >= 70)
+        # ATR Multiple（過熱感）
+        atr_multiple = result.get('details', {}).get('atr', {}).get('atr_multiple_ma50', 0)
         
-        if is_stage1_candidate or is_stage2 or is_high_potential_stage1:
+        # 【重要】A+（90点以上）かつoverheat≥2.0のみ抽出
+        if grade == 'A+' and atr_multiple >= 2.0:
             # ステージ開始日の推定（簡易版）
             stage_start_date = estimate_stage_start_date(indicators_df, stage)
             
-            # ATR Multiple（過熱感）
-            atr_multiple = result['details']['atr']['atr_multiple_ma50']
+            # RS Rating
+            rs_rating = result.get('details', {}).get('rs', {}).get('rs_rating', 0)
             
-            # 優先度設定
-            if is_stage2:
-                priority = 1
-            elif is_high_potential_stage1:
-                priority = 2
-            else:
-                priority = 3
+            # VCP検出情報（参考）
+            vcp_detected = result.get('details', {}).get('vcp', {}).get('detected', False)
+            
+            # 出来高スコア
+            volume_score = result.get('details', {}).get('volume', {}).get('total_score', 0)
+            
+            # Wyckoffフェーズ
+            wyckoff_phase = result.get('details', {}).get('volume', {}).get('wyckoff_phase', '')
+            
+            # ベーススコア
+            base_score = result.get('breakdown', {}).get('base_quality', 0)
             
             return {
-                'Priority': priority,
                 'Ticker': ticker,
                 'Exchange': exchange,
                 'Current Stage': f'ステージ{stage}',
                 'Substage': result.get('substage', ''),
                 'Stage Start Date': stage_start_date,
                 'Score': score,
-                'Grade': result.get('grade', ''),
-                'Overheat': f"{atr_multiple:.2f}",
-                'RS Rating': result['details']['rs']['rs_rating'],
+                'Grade': grade,
+                'Overheat': atr_multiple,  # 数値として保持
+                'RS Rating': rs_rating,
                 'Action': result.get('action', ''),
                 # 詳細情報
-                'Base Score': result['breakdown'].get('base_quality', 0) if 'breakdown' in result else 0,
-                'VCP Detected': result['details'].get('vcp', {}).get('detected', False) if 'details' in result else False,
-                'Volume Score': result['details'].get('volume', {}).get('total_score', 0) if 'details' in result else 0,
-                'Wyckoff Phase': result['details'].get('volume', {}).get('wyckoff_phase', '') if 'details' in result else ''
+                'Base Score': base_score,
+                'VCP Detected': vcp_detected,
+                'Volume Score': volume_score,
+                'Wyckoff Phase': wyckoff_phase
             }
         
         return None
@@ -141,13 +144,14 @@ def estimate_stage_start_date(df: pd.DataFrame, stage: int) -> str:
 def run_screener(use_parallel: bool = True, max_workers: int = None):
     """
     メインスクリーナーを実行
+    A+評価かつoverheat≥2の厳選銘柄のみ抽出
     
     Args:
         use_parallel: 並列処理を使用するか
         max_workers: 最大ワーカー数（Noneの場合はCPUコア数-1）
     """
     print("="*70)
-    print("統合スクリーニングシステム - Stage 1/2候補の抽出")
+    print("統合スクリーニングシステム - 厳選版（A+ & Overheat≥2）")
     print("="*70)
     
     # 1. ティッカーリスト読み込み
@@ -200,6 +204,7 @@ def run_screener(use_parallel: bool = True, max_workers: int = None):
             max_workers = max(1, cpu_count() - 1)
         
         print(f"\n並列処理で分析開始（{max_workers}ワーカー）...")
+        print("【フィルター】A+評価（90点以上）かつ Overheat≥2.0 のみ抽出")
         
         with Pool(processes=max_workers) as pool:
             for result in tqdm(
@@ -212,6 +217,8 @@ def run_screener(use_parallel: bool = True, max_workers: int = None):
     else:
         # 逐次処理
         print("\n逐次処理で分析開始...")
+        print("【フィルター】A+評価（90点以上）かつ Overheat≥2.0 のみ抽出")
+        
         for args in tqdm(args_list, desc="銘柄分析中"):
             result = analyze_single_ticker(args)
             if result is not None:
@@ -219,20 +226,21 @@ def run_screener(use_parallel: bool = True, max_workers: int = None):
     
     # 4. 結果の整理と出力
     if not results:
-        print("\n分析完了。条件に合う銘柄は見つかりませんでした。")
+        print("\n分析完了。A+かつoverheat≥2の条件を満たす銘柄は見つかりませんでした。")
+        print("\n【ヒント】")
+        print("- 市場環境が弱気の場合、該当銘柄が少なくなります")
+        print("- 条件を緩和する場合は、screener.pyの判定基準を調整してください")
         return
     
     # DataFrameに変換
     df_results = pd.DataFrame(results)
     
-    # ソート
-    df_results = df_results.sort_values(
-        ['Priority', 'Score'], 
-        ascending=[True, False]
-    )
+    # 【重要】overheat（ATR Multiple）の降順でソート
+    df_results = df_results.sort_values('Overheat', ascending=False)
     
-    # Priority列を削除（出力用）
-    output_df = df_results.drop('Priority', axis=1)
+    # Overheatをフォーマット（表示用）
+    output_df = df_results.copy()
+    output_df['Overheat'] = output_df['Overheat'].apply(lambda x: f"{x:.2f}")
     
     # 5. CSV出力
     output_df.to_csv('stage1or2.csv', index=False, encoding='utf-8-sig')
@@ -254,25 +262,35 @@ def run_screener(use_parallel: bool = True, max_workers: int = None):
     
     # 7. 統計情報の表示
     print("\n" + "="*70)
-    print("スクリーニング結果サマリー")
+    print("スクリーニング結果サマリー【厳選版】")
     print("="*70)
     
     stage2_count = len(df_results[df_results['Current Stage'] == 'ステージ2'])
     stage1_count = len(df_results[df_results['Current Stage'] == 'ステージ1'])
     
-    print(f"総抽出銘柄数: {len(df_results)}")
+    print(f"総抽出銘柄数: {len(df_results)}銘柄 （全{len(tickers_list)}銘柄中）")
     print(f"  - ステージ2（上昇トレンド）: {stage2_count}銘柄")
     print(f"  - ステージ1（有望ベース）: {stage1_count}銘柄")
+    print(f"\n【重要】全銘柄がA+評価（90点以上）かつ Overheat≥2.0")
+    print(f"【ソート】Overheat降順（過熱度が高い順）")
     
-    # グレード別集計
-    print("\nグレード別内訳:")
-    grade_counts = df_results['Grade'].value_counts().sort_index()
-    for grade, count in grade_counts.items():
-        print(f"  {grade}評価: {count}銘柄")
+    # Overheat統計
+    overheat_values = df_results['Overheat'].astype(float)
+    print(f"\nOverheat統計:")
+    print(f"  最大: {overheat_values.max():.2f}")
+    print(f"  平均: {overheat_values.mean():.2f}")
+    print(f"  最小: {overheat_values.min():.2f}")
+    
+    # RS Rating統計
+    rs_values = df_results['RS Rating']
+    print(f"\nRS Rating統計:")
+    print(f"  最大: {rs_values.max():.0f}")
+    print(f"  平均: {rs_values.mean():.0f}")
+    print(f"  最小: {rs_values.min():.0f}")
     
     # トップ10表示
     print("\n" + "="*70)
-    print("トップ10銘柄")
+    print("トップ10銘柄（Overheat降順）")
     print("="*70)
     
     top10 = output_df.head(10)
@@ -280,19 +298,23 @@ def run_screener(use_parallel: bool = True, max_workers: int = None):
         print(f"\n{row['Ticker']} ({row['Exchange']})")
         print(f"  ステージ: {row['Current Stage']} - {row['Substage']}")
         print(f"  スコア: {row['Score']:.1f} ({row['Grade']})")
+        print(f"  Overheat: {row['Overheat']} ★")
         print(f"  RS Rating: {row['RS Rating']:.0f}")
-        print(f"  過熱度: {row['Overheat']}")
         print(f"  アクション: {row['Action']}")
     
     print("\n" + "="*70)
     print("スクリーニング完了！")
     print("="*70)
+    print("\n【推奨】")
+    print("1. TradingViewで上位銘柄のチャートを確認")
+    print("2. Overheatが高い銘柄は利確も検討")
+    print("3. RS Rating 85以上の銘柄を優先")
 
 
 if __name__ == '__main__':
     import argparse
     
-    parser = argparse.ArgumentParser(description='統合スクリーニングシステム')
+    parser = argparse.ArgumentParser(description='統合スクリーニングシステム（厳選版）')
     parser.add_argument('--sequential', action='store_true', 
                        help='逐次処理を使用（デフォルトは並列処理）')
     parser.add_argument('--workers', type=int, default=None,
