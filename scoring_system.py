@@ -1,6 +1,7 @@
 """
 総合スコアリングシステム
 全ての理論を統合してStage別にスコアリング
+VCP無効化版 - より確実な指標に重点配分
 """
 import pandas as pd
 from typing import Dict
@@ -15,10 +16,10 @@ from vwap_analyzer import VWAPAnalyzer
 
 class ScoringSystem:
     """
-    統合スコアリングシステム
+    統合スコアリングシステム（VCP無効化版）
     
     Stage別にスコア配分を変更:
-    - Stage 1: ベース品質重視
+    - Stage 1: ベース品質・RS Rating重視（VCP削除）
     - Stage 2: トレンド強度とATR位置重視
     """
     
@@ -36,21 +37,22 @@ class ScoringSystem:
         # 各分析器の初期化
         self.stage_detector = StageDetector(df, benchmark_df)
         self.base_analyzer = BaseAnalyzer(df)
-        self.vcp_detector = VCPDetector(df)
+        self.vcp_detector = VCPDetector(df)  # 参考情報として残す
         self.atr_analyzer = ATRAnalyzer(df)
         self.volume_analyzer = VolumeAnalyzer(df)
         self.vwap_analyzer = VWAPAnalyzer(df)
         
     def score_stage1_candidate(self) -> Dict:
         """
-        Stage 1候補のスコアリング（100点満点）
+        Stage 1候補のスコアリング（100点満点）- VCP無効化版
         
-        配分:
-        - ベース品質: 25点
-        - VCP完成度: 25点
-        - RS Rating: 25点
-        - 出来高: 15点
-        - ATR位置: 10点
+        配分（VCP削除、他項目に再配分）:
+        - ベース品質: 35点 (+10点)
+        - RS Rating: 35点 (+10点)
+        - 出来高: 20点 (+5点)
+        - ATR位置: 10点 (変更なし)
+        
+        VCPは検知が困難なため無効化し、より確実な指標に重点配分
         """
         result = {
             'stage': 1,
@@ -59,10 +61,10 @@ class ScoringSystem:
             'details': {}
         }
         
-        # 1. ベース品質 (25点)
+        # 1. ベース品質 (35点) - VCPの10点を追加
         base_result = self.base_analyzer.calculate_base_quality_score()
         if base_result['base_detected']:
-            base_score = base_result['total_score'] * 0.25
+            base_score = base_result['total_score'] * 0.35
             result['details']['base'] = base_result['details']
         else:
             base_score = 0
@@ -70,44 +72,37 @@ class ScoringSystem:
         
         result['breakdown']['base_quality'] = base_score
         
-        # 2. VCP完成度 (25点)
+        # VCP検知は無効化（記録のみ、スコアに影響なし）
         vcp_result = self.vcp_detector.detect_vcp()
-        if vcp_result['detected']:
-            vcp_score = 25
-        elif vcp_result.get('num_contractions', 0) >= 2:
-            vcp_score = 15
-        else:
-            vcp_score = 5
-        
-        result['breakdown']['vcp'] = vcp_score
         result['details']['vcp'] = vcp_result
+        result['details']['vcp']['note'] = 'VCP検知は無効化（参考情報のみ）'
         
-        # 3. RS Rating (25点)
+        # 2. RS Rating (35点) - VCPの10点を追加
         rs_result = analyze_rs_metrics(self.df, self.benchmark_df)
         rs_rating = rs_result['rs_rating']
         
         if rs_rating >= 90:
-            rs_score = 25
+            rs_score = 35
         elif rs_rating >= 85:
-            rs_score = 23
+            rs_score = 32
         elif rs_rating >= 80:
-            rs_score = 20
+            rs_score = 28
         elif rs_rating >= 70:
-            rs_score = 15
+            rs_score = 21
         else:
-            rs_score = 10
+            rs_score = 14
         
         result['breakdown']['rs_rating'] = rs_score
         result['details']['rs'] = rs_result
         
-        # 4. 出来高 (15点)
+        # 3. 出来高 (20点) - VCPの5点を追加
         volume_result = self.volume_analyzer.calculate_volume_score()
-        volume_score = volume_result['total_score'] * 0.15
+        volume_score = volume_result['total_score'] * 0.20
         
         result['breakdown']['volume'] = volume_score
         result['details']['volume'] = volume_result
         
-        # 5. ATR位置 (10点)
+        # 4. ATR位置 (10点) - 変更なし
         atr_result = self.atr_analyzer.analyze_atr_metrics(stage=1)
         atr_multiple = atr_result['atr_multiple_ma50']
         
@@ -193,6 +188,11 @@ class ScoringSystem:
         result['breakdown']['base_quality'] = base_score
         result['details']['base'] = base_result
         result['details']['base_count'] = base_count
+        
+        # VCP情報（参考のみ）
+        vcp_result = self.vcp_detector.detect_vcp()
+        result['details']['vcp'] = vcp_result
+        result['details']['vcp']['note'] = 'VCP検知は無効化（参考情報のみ）'
         
         # 3. RS Rating (20点)
         rs_result = analyze_rs_metrics(self.df, self.benchmark_df)
@@ -328,7 +328,7 @@ if __name__ == '__main__':
     from data_fetcher import fetch_stock_data
     from indicators import calculate_all_basic_indicators
     
-    print("総合スコアリングのテストを開始...")
+    print("総合スコアリング（VCP無効化版）のテストを開始...")
     
     test_tickers = ['AAPL', 'TSLA', 'NVDA']
     
