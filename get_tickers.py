@@ -47,7 +47,7 @@ def get_and_save_tickers():
 
     # 4. 除外条件に基づいてティッカーをフィルタリング
     print("指定された条件に基づいてティッカーをフィルタリングします...")
-    excluded_suffixes = ['.U', '.W', '.A', '.B']
+    excluded_suffixes = ['.U', '.W', '.A', '.B', '.R']
     initial_count = len(combined_df)
 
     # 条件①：ティッカーの文字数が5文字
