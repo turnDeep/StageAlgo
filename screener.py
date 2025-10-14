@@ -1,7 +1,8 @@
 """
 Stage Screener
 
-This script screens stocks from stock.csv and categorizes them into Stage 1 (sub-stages 1E, 1F) and Stage 2.
+This script screens stocks from stock.csv and categorizes them into Stage 1 (sub-stages 1E, 1F) and Stage 2
+based on specific criteria including scoring grade and overheat levels.
 The results are saved into separate CSV and TradingView-compatible text files.
 """
 import pandas as pd
@@ -18,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 def analyze_ticker(args):
     """
-    Analyzes a single ticker and returns its stage information if applicable.
+    Analyzes a single ticker and returns its stage information and other metrics.
     """
     ticker, exchange, benchmark_df_dict = args
     try:
@@ -37,27 +38,27 @@ def analyze_ticker(args):
         stage_detector = StageDetector(indicator_df)
         stage, sub_stage, _ = stage_detector.detect_stage()
 
-        # We are only interested in Stage 1E, 1F and Stage 2
-        if (stage == 'Stage 1' and sub_stage in ['1E', '1F']) or stage == 'Stage 2':
-            benchmark_df = pd.DataFrame(benchmark_df_dict)
-            benchmark_df.index = pd.to_datetime(benchmark_df.index)
+        benchmark_df = pd.DataFrame(benchmark_df_dict)
+        benchmark_df.index = pd.to_datetime(benchmark_df.index)
 
-            scorer = ScoringSystem(indicator_df, ticker, benchmark_df)
-            result = scorer.comprehensive_analysis()
+        scorer = ScoringSystem(indicator_df, ticker, benchmark_df)
+        result = scorer.comprehensive_analysis()
 
-            score = result.get('total_score', 0)
-            judgement = result.get('grade', '')
-            
-            return {
-                'Ticker': ticker,
-                'Exchange': exchange,
-                'Stage': stage,
-                'Sub Stage': sub_stage,
-                'Score': score,
-                'Judgement': judgement,
-                'Price': stock_df['Close'].iloc[-1],
-                'Volume': stock_df['Volume'].iloc[-1]
-            }
+        score = result.get('total_score', 0)
+        judgement = result.get('grade', '')
+        overheat = result.get('details', {}).get('atr', {}).get('atr_multiple_ma50', 0)
+
+        return {
+            'Ticker': ticker,
+            'Exchange': exchange,
+            'Stage': stage,
+            'Sub Stage': sub_stage,
+            'Score': score,
+            'Judgement': judgement,
+            'Overheat': overheat,
+            'Price': stock_df['Close'].iloc[-1],
+            'Volume': stock_df['Volume'].iloc[-1]
+        }
     except Exception as e:
         # print(f"Could not analyze {ticker}: {e}")
         return None
@@ -67,7 +68,7 @@ def main():
     """
     Main function to run the screener.
     """
-    print("Starting stock screener...")
+    print("Starting stock screener with new filtering conditions...")
 
     try:
         stock_list_df = pd.read_csv('stock.csv')
@@ -104,43 +105,51 @@ def main():
                 results.append(result)
 
     if not results:
-        print("No stocks passed the screening criteria.")
+        print("No stocks passed the initial analysis.")
         return
 
     results_df = pd.DataFrame(results)
 
-    # Filter for Stage 1 (1E, 1F)
-    stage1_df = results_df[results_df['Stage'] == 'Stage 1'].copy()
-    stage1_df = stage1_df[stage1_df['Sub Stage'].isin(['1E', '1F'])]
+    # Apply new filtering criteria
+    # Stage 1: Sub Stage in ['1E', '1F'] AND Overheat >= 2
+    stage1_df = results_df[
+        (results_df['Stage'] == 'Stage 1') &
+        (results_df['Sub Stage'].isin(['1E', '1F'])) &
+        (results_df['Overheat'] >= 2)
+    ].copy()
 
-    # Filter for Stage 2
-    stage2_df = results_df[results_df['Stage'] == 'Stage 2'].copy()
+    # Stage 2: Judgement == 'A+' AND Overheat >= 2
+    stage2_df = results_df[
+        (results_df['Stage'] == 'Stage 2') &
+        (results_df['Judgement'] == 'A+') &
+        (results_df['Overheat'] >= 2)
+    ].copy()
 
     # Save Stage 1 results
     if not stage1_df.empty:
         stage1_df.sort_values(by='Score', ascending=False, inplace=True)
         stage1_df.to_csv('stage1.csv', index=False)
-        print(f"Saved {len(stage1_df)} Stage 1 (1E, 1F) stocks to stage1.csv")
+        print(f"Saved {len(stage1_df)} Stage 1 stocks to stage1.csv based on new criteria.")
 
         stage1_tv_list = [f"{row['Exchange']}:{row['Ticker']}" for index, row in stage1_df.iterrows()]
         with open('stage1_tradingview.txt', 'w') as f:
             f.write(','.join(stage1_tv_list))
         print("Saved TradingView list for Stage 1 stocks to stage1_tradingview.txt")
     else:
-        print("No Stage 1 (1E, 1F) stocks found.")
+        print("No Stage 1 stocks found matching the new criteria (Sub-stage 1E/1F and Overheat >= 2).")
 
     # Save Stage 2 results
     if not stage2_df.empty:
         stage2_df.sort_values(by='Score', ascending=False, inplace=True)
         stage2_df.to_csv('stage2.csv', index=False)
-        print(f"Saved {len(stage2_df)} Stage 2 stocks to stage2.csv")
+        print(f"Saved {len(stage2_df)} Stage 2 stocks to stage2.csv based on new criteria.")
 
         stage2_tv_list = [f"{row['Exchange']}:{row['Ticker']}" for index, row in stage2_df.iterrows()]
         with open('stage2_tradingview.txt', 'w') as f:
             f.write(','.join(stage2_tv_list))
         print("Saved TradingView list for Stage 2 stocks to stage2_tradingview.txt")
     else:
-        print("No Stage 2 stocks found.")
+        print("No Stage 2 stocks found matching the new criteria (Grade A+ and Overheat >= 2).")
 
     print("Screening complete.")
 
