@@ -65,6 +65,11 @@ def get_and_save_tickers():
     count_after_dollar = len(combined_df)
     print(f"'$'を含むティッカーを除外: {count_after_suffix - count_after_dollar} 件")
 
+    # 条件④：'FILE CREATION TIME'で始まる無効なティッカーを除外
+    combined_df = combined_df[~combined_df['Ticker'].str.startswith('FILE CREATION TIME', na=False)]
+    count_after_invalid = len(combined_df)
+    print(f"'FILE CREATION TIME'で始まる無効なティッカーを除外: {count_after_dollar - count_after_invalid} 件")
+
     # 5. yfinanceでETF/Fundを除外
     print("\nyfinanceで会社名を取得し、ETF/Fundを除外します...")
     print("※ この処理には時間がかかります（数分〜十数分）")
