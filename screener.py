@@ -1,328 +1,157 @@
 """
-統合スクリーニングシステム
-A+評価かつoverheat≥2の厳選銘柄のみ抽出
+Stage Screener
+
+This script screens stocks from stock.csv and categorizes them into Stage 1 (sub-stages 1E, 1F) and Stage 2
+based on specific criteria including scoring grade and overheat levels.
+The results are saved into separate CSV and TradingView-compatible text files.
 """
 import pandas as pd
-import numpy as np
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 import warnings
-warnings.filterwarnings('ignore')
 
 from data_fetcher import fetch_stock_data
 from indicators import calculate_all_basic_indicators
-from rs_calculator import analyze_rs_metrics
+from stage_detector import StageDetector
 from scoring_system import ScoringSystem
 
+warnings.filterwarnings('ignore')
 
-def analyze_single_ticker(args):
+def analyze_ticker(args):
     """
-    単一銘柄を分析（並列処理用）
-    
-    Args:
-        args: (ticker, exchange, benchmark_df)
-        
-    Returns:
-        dict or None: 分析結果
+    Analyzes a single ticker and returns its stage information and other metrics.
     """
     ticker, exchange, benchmark_df_dict = args
-    
     try:
-        # データ取得
         stock_df, _ = fetch_stock_data(ticker, period='2y')
-        
         if stock_df is None or len(stock_df) < 252:
             return None
-        
-        # 指標計算
-        indicators_df = calculate_all_basic_indicators(stock_df)
-        
-        if indicators_df.empty or len(indicators_df) < 252:
+
+        indicator_df = calculate_all_basic_indicators(stock_df)
+        if indicator_df.empty or len(indicator_df) < 252:
             return None
         
-        # ベンチマークDataFrameを再構築
+        indicator_df = indicator_df.dropna()
+        if len(indicator_df) < 252:
+            return None
+
+        stage_detector = StageDetector(indicator_df)
+        stage, sub_stage, _ = stage_detector.detect_stage()
+
         benchmark_df = pd.DataFrame(benchmark_df_dict)
         benchmark_df.index = pd.to_datetime(benchmark_df.index)
-        
-        # RS Rating計算
-        rs_result = analyze_rs_metrics(indicators_df, benchmark_df)
-        indicators_df['RS_Rating'] = rs_result['rs_rating']
-        
-        indicators_df = indicators_df.dropna()
-        
-        if len(indicators_df) < 252:
-            return None
-        
-        # スコアリングシステムで分析
-        scorer = ScoringSystem(indicators_df, ticker, benchmark_df)
+
+        scorer = ScoringSystem(indicator_df, ticker, benchmark_df)
         result = scorer.comprehensive_analysis()
-        
-        # 厳格なフィルター条件
-        stage = result.get('stage', 0)
+
         score = result.get('total_score', 0)
-        grade = result.get('grade', '')
-        
-        # ATR Multiple（過熱感）
-        atr_multiple = result.get('details', {}).get('atr', {}).get('atr_multiple_ma50', 0)
-        
-        # 【重要】A+（90点以上）かつoverheat≥2.0のみ抽出
-        if grade == 'A+' and atr_multiple >= 2.0:
-            # ステージ開始日の推定（簡易版）
-            stage_start_date = estimate_stage_start_date(indicators_df, stage)
-            
-            # RS Rating
-            rs_rating = result.get('details', {}).get('rs', {}).get('rs_rating', 0)
-            
-            # VCP検出情報（参考）
-            vcp_detected = result.get('details', {}).get('vcp', {}).get('detected', False)
-            
-            # 出来高スコア
-            volume_score = result.get('details', {}).get('volume', {}).get('total_score', 0)
-            
-            # Wyckoffフェーズ
-            wyckoff_phase = result.get('details', {}).get('volume', {}).get('wyckoff_phase', '')
-            
-            # ベーススコア
-            base_score = result.get('breakdown', {}).get('base_quality', 0)
-            
-            return {
-                'Ticker': ticker,
-                'Exchange': exchange,
-                'Current Stage': f'ステージ{stage}',
-                'Substage': result.get('substage', ''),
-                'Stage Start Date': stage_start_date,
-                'Score': score,
-                'Grade': grade,
-                'Overheat': atr_multiple,  # 数値として保持
-                'RS Rating': rs_rating,
-                'Action': result.get('action', ''),
-                # 詳細情報
-                'Base Score': base_score,
-                'VCP Detected': vcp_detected,
-                'Volume Score': volume_score,
-                'Wyckoff Phase': wyckoff_phase
-            }
-        
-        return None
-        
+        judgement = result.get('grade', '')
+        overheat = result.get('details', {}).get('atr', {}).get('atr_multiple_ma50', 0)
+
+        return {
+            'Ticker': ticker,
+            'Exchange': exchange,
+            'Stage': stage,
+            'Sub Stage': sub_stage,
+            'Score': score,
+            'Judgement': judgement,
+            'Overheat': overheat,
+            'Price': stock_df['Close'].iloc[-1],
+            'Volume': stock_df['Volume'].iloc[-1]
+        }
     except Exception as e:
-        # エラーは静かに無視
+        # print(f"Could not analyze {ticker}: {e}")
         return None
+    return None
 
+def main():
+    """
+    Main function to run the screener.
+    """
+    print("Starting stock screener with new filtering conditions...")
 
-def estimate_stage_start_date(df: pd.DataFrame, stage: int) -> str:
-    """
-    ステージ開始日を推定（簡易版）
-    
-    Args:
-        df: 指標データ
-        stage: ステージ番号
-        
-    Returns:
-        str: 推定開始日
-    """
-    if stage == 1:
-        # MA150が横ばいになった時点
-        slope_threshold = 0.02
-        for i in range(len(df)-1, max(0, len(df)-210), -1):
-            if abs(df['SMA_150_Slope'].iloc[i]) >= slope_threshold:
-                return df.index[i+1].strftime('%Y-%m-%d') if i+1 < len(df) else df.index[i].strftime('%Y-%m-%d')
-        return df.index[0].strftime('%Y-%m-%d')
-        
-    elif stage == 2:
-        # 50日高値を更新した日
-        for i in range(len(df)-1, max(0, len(df)-60), -1):
-            if i >= 50:
-                high_50d = df['Close'].iloc[i-50:i].max()
-                if df['Close'].iloc[i] > high_50d * 1.02:
-                    return df.index[i].strftime('%Y-%m-%d')
-        return df.index[-60].strftime('%Y-%m-%d') if len(df) >= 60 else df.index[0].strftime('%Y-%m-%d')
-    
-    return df.index[-100].strftime('%Y-%m-%d') if len(df) >= 100 else df.index[0].strftime('%Y-%m-%d')
-
-
-def run_screener(use_parallel: bool = True, max_workers: int = None):
-    """
-    メインスクリーナーを実行
-    A+評価かつoverheat≥2の厳選銘柄のみ抽出
-    
-    Args:
-        use_parallel: 並列処理を使用するか
-        max_workers: 最大ワーカー数（Noneの場合はCPUコア数-1）
-    """
-    print("="*70)
-    print("統合スクリーニングシステム - 厳選版（A+ & Overheat≥2）")
-    print("="*70)
-    
-    # 1. ティッカーリスト読み込み
     try:
-        tickers_df = pd.read_csv('stock.csv', encoding='utf-8-sig')
-        if 'Ticker' not in tickers_df.columns or 'Exchange' not in tickers_df.columns:
-            print("エラー: stock.csv に 'Ticker' または 'Exchange' 列が見つかりません。")
-            return
-        
-        tickers_list = tickers_df[['Ticker', 'Exchange']].values.tolist()
-        print(f"✓ {len(tickers_list)}銘柄を読み込みました")
-        
+        stock_list_df = pd.read_csv('stock.csv')
+        stock_list_df.dropna(subset=['Ticker'], inplace=True)
+        tickers = [(row['Ticker'], row['Exchange']) for index, row in stock_list_df.iterrows()]
     except FileNotFoundError:
-        print("エラー: stock.csvが見つかりません。")
-        print("先に get_tickers.py を実行してください。")
+        print("Error: stock.csv not found. Please run get_tickers.py first.")
         return
-    except Exception as e:
-        print(f"エラー: {e}")
-        return
-    
-    # 2. ベンチマーク(SPY)データ取得
-    print("\nベンチマークデータ(SPY)を取得中...")
+
+    print(f"Loaded {len(tickers)} tickers for analysis.")
+
+    # Fetch benchmark data (SPY)
+    print("Fetching benchmark data (SPY)...")
     _, benchmark_df = fetch_stock_data('SPY', period='2y')
-    
     if benchmark_df is None or benchmark_df.empty:
-        print("致命的エラー: ベンチマークデータを取得できませんでした。")
+        print("Fatal Error: Could not fetch benchmark data.")
         return
-    
     benchmark_df = calculate_all_basic_indicators(benchmark_df)
     benchmark_df = benchmark_df.dropna()
-    
-    # DataFrameを辞書に変換（並列処理用）
     benchmark_df_dict = {
         'index': benchmark_df.index.astype(str).tolist(),
         **{col: benchmark_df[col].tolist() for col in benchmark_df.columns}
     }
-    
-    print(f"✓ ベンチマークデータ取得完了 ({len(benchmark_df)}日分)")
-    
-    # 3. 並列処理または逐次処理
+    print("Benchmark data fetched successfully.")
+
+
     results = []
-    
-    # 分析用の引数リスト
-    args_list = [(ticker, exchange, benchmark_df_dict) 
-                 for ticker, exchange in tickers_list]
-    
-    if use_parallel:
-        # 並列処理
-        if max_workers is None:
-            max_workers = max(1, cpu_count() - 1)
-        
-        print(f"\n並列処理で分析開始（{max_workers}ワーカー）...")
-        print("【フィルター】A+評価（90点以上）かつ Overheat≥2.0 のみ抽出")
-        
-        with Pool(processes=max_workers) as pool:
-            for result in tqdm(
-                pool.imap_unordered(analyze_single_ticker, args_list),
-                total=len(args_list),
-                desc="銘柄分析中"
-            ):
-                if result is not None:
-                    results.append(result)
-    else:
-        # 逐次処理
-        print("\n逐次処理で分析開始...")
-        print("【フィルター】A+評価（90点以上）かつ Overheat≥2.0 のみ抽出")
-        
-        for args in tqdm(args_list, desc="銘柄分析中"):
-            result = analyze_single_ticker(args)
-            if result is not None:
+    args_list = [(ticker, exchange, benchmark_df_dict) for ticker, exchange in tickers]
+
+    # Use multiprocessing to speed up the analysis
+    with Pool(cpu_count()) as pool:
+        for result in tqdm(pool.imap_unordered(analyze_ticker, args_list), total=len(tickers), desc="Analyzing Stocks"):
+            if result:
                 results.append(result)
-    
-    # 4. 結果の整理と出力
+
     if not results:
-        print("\n分析完了。A+かつoverheat≥2の条件を満たす銘柄は見つかりませんでした。")
-        print("\n【ヒント】")
-        print("- 市場環境が弱気の場合、該当銘柄が少なくなります")
-        print("- 条件を緩和する場合は、screener.pyの判定基準を調整してください")
+        print("No stocks passed the initial analysis.")
         return
-    
-    # DataFrameに変換
-    df_results = pd.DataFrame(results)
-    
-    # 【重要】overheat（ATR Multiple）の降順でソート
-    df_results = df_results.sort_values('Overheat', ascending=False)
-    
-    # Overheatをフォーマット（表示用）
-    output_df = df_results.copy()
-    output_df['Overheat'] = output_df['Overheat'].apply(lambda x: f"{x:.2f}")
-    
-    # 5. CSV出力
-    output_df.to_csv('stage1or2.csv', index=False, encoding='utf-8-sig')
-    print(f"\n✓ {len(output_df)}件の結果を stage1or2.csv に出力しました")
-    
-    # 6. TradingView用TXT出力
-    tradingview_list = [
-        f"{row['Exchange']}:{row['Ticker']}" 
-        for _, row in df_results.iterrows()
-    ]
-    tradingview_str = ",".join(tradingview_list)
-    
-    try:
-        with open('stage1or2_tradingview.txt', 'w', encoding='utf-8') as f:
-            f.write(tradingview_str)
-        print(f"✓ TradingView用リストを stage1or2_tradingview.txt に保存しました")
-    except Exception as e:
-        print(f"エラー: TradingView用ファイルの書き込み失敗 - {e}")
-    
-    # 7. 統計情報の表示
-    print("\n" + "="*70)
-    print("スクリーニング結果サマリー【厳選版】")
-    print("="*70)
-    
-    stage2_count = len(df_results[df_results['Current Stage'] == 'ステージ2'])
-    stage1_count = len(df_results[df_results['Current Stage'] == 'ステージ1'])
-    
-    print(f"総抽出銘柄数: {len(df_results)}銘柄 （全{len(tickers_list)}銘柄中）")
-    print(f"  - ステージ2（上昇トレンド）: {stage2_count}銘柄")
-    print(f"  - ステージ1（有望ベース）: {stage1_count}銘柄")
-    print(f"\n【重要】全銘柄がA+評価（90点以上）かつ Overheat≥2.0")
-    print(f"【ソート】Overheat降順（過熱度が高い順）")
-    
-    # Overheat統計
-    overheat_values = df_results['Overheat'].astype(float)
-    print(f"\nOverheat統計:")
-    print(f"  最大: {overheat_values.max():.2f}")
-    print(f"  平均: {overheat_values.mean():.2f}")
-    print(f"  最小: {overheat_values.min():.2f}")
-    
-    # RS Rating統計
-    rs_values = df_results['RS Rating']
-    print(f"\nRS Rating統計:")
-    print(f"  最大: {rs_values.max():.0f}")
-    print(f"  平均: {rs_values.mean():.0f}")
-    print(f"  最小: {rs_values.min():.0f}")
-    
-    # トップ10表示
-    print("\n" + "="*70)
-    print("トップ10銘柄（Overheat降順）")
-    print("="*70)
-    
-    top10 = output_df.head(10)
-    for idx, row in top10.iterrows():
-        print(f"\n{row['Ticker']} ({row['Exchange']})")
-        print(f"  ステージ: {row['Current Stage']} - {row['Substage']}")
-        print(f"  スコア: {row['Score']:.1f} ({row['Grade']})")
-        print(f"  Overheat: {row['Overheat']} ★")
-        print(f"  RS Rating: {row['RS Rating']:.0f}")
-        print(f"  アクション: {row['Action']}")
-    
-    print("\n" + "="*70)
-    print("スクリーニング完了！")
-    print("="*70)
-    print("\n【推奨】")
-    print("1. TradingViewで上位銘柄のチャートを確認")
-    print("2. Overheatが高い銘柄は利確も検討")
-    print("3. RS Rating 85以上の銘柄を優先")
 
+    results_df = pd.DataFrame(results)
 
-if __name__ == '__main__':
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='統合スクリーニングシステム（厳選版）')
-    parser.add_argument('--sequential', action='store_true', 
-                       help='逐次処理を使用（デフォルトは並列処理）')
-    parser.add_argument('--workers', type=int, default=None,
-                       help='ワーカー数（デフォルト: CPUコア数-1）')
-    
-    args = parser.parse_args()
-    
-    run_screener(
-        use_parallel=not args.sequential,
-        max_workers=args.workers
-    )
+    # Apply new filtering criteria
+    # Stage 1: Sub Stage in ['1E', '1F'] AND Overheat >= 2
+    stage1_df = results_df[
+        (results_df['Stage'] == 'Stage 1') &
+        (results_df['Sub Stage'].isin(['1E', '1F'])) &
+        (results_df['Overheat'] >= 2)
+    ].copy()
+
+    # Stage 2: Judgement == 'A+' AND Overheat >= 2
+    stage2_df = results_df[
+        (results_df['Stage'] == 'Stage 2') &
+        (results_df['Judgement'] == 'A+') &
+        (results_df['Overheat'] >= 2)
+    ].copy()
+
+    # Save Stage 1 results
+    if not stage1_df.empty:
+        stage1_df.sort_values(by='Score', ascending=False, inplace=True)
+        stage1_df.to_csv('stage1.csv', index=False)
+        print(f"Saved {len(stage1_df)} Stage 1 stocks to stage1.csv based on new criteria.")
+
+        stage1_tv_list = [f"{row['Exchange']}:{row['Ticker']}" for index, row in stage1_df.iterrows()]
+        with open('stage1_tradingview.txt', 'w') as f:
+            f.write(','.join(stage1_tv_list))
+        print("Saved TradingView list for Stage 1 stocks to stage1_tradingview.txt")
+    else:
+        print("No Stage 1 stocks found matching the new criteria (Sub-stage 1E/1F and Overheat >= 2).")
+
+    # Save Stage 2 results
+    if not stage2_df.empty:
+        stage2_df.sort_values(by='Score', ascending=False, inplace=True)
+        stage2_df.to_csv('stage2.csv', index=False)
+        print(f"Saved {len(stage2_df)} Stage 2 stocks to stage2.csv based on new criteria.")
+
+        stage2_tv_list = [f"{row['Exchange']}:{row['Ticker']}" for index, row in stage2_df.iterrows()]
+        with open('stage2_tradingview.txt', 'w') as f:
+            f.write(','.join(stage2_tv_list))
+        print("Saved TradingView list for Stage 2 stocks to stage2_tradingview.txt")
+    else:
+        print("No Stage 2 stocks found matching the new criteria (Grade A+ and Overheat >= 2).")
+
+    print("Screening complete.")
+
+if __name__ == "__main__":
+    main()
