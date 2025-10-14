@@ -57,7 +57,7 @@ class ATRAnalyzer:
         else:
             atr_multiple = 0.0
         
-        return atr_multiple
+        return abs(atr_multiple)
     
     def interpret_atr_multiple(self, atr_multiple: float, stage: int = 2) -> Dict:
         """
