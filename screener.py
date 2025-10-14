@@ -9,11 +9,13 @@ import pandas as pd
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 import warnings
+import argparse
 
 from data_fetcher import fetch_stock_data
 from indicators import calculate_all_basic_indicators
 from stage_detector import StageDetector
 from scoring_system import ScoringSystem
+from rs_calculator import analyze_rs_metrics
 
 warnings.filterwarnings('ignore')
 
@@ -35,11 +37,15 @@ def analyze_ticker(args):
         if len(indicator_df) < 252:
             return None
 
-        stage_detector = StageDetector(indicator_df)
-        stage, sub_stage, _ = stage_detector.detect_stage()
-
         benchmark_df = pd.DataFrame(benchmark_df_dict)
         benchmark_df.index = pd.to_datetime(benchmark_df.index)
+
+        # Add RS Rating to indicator_df
+        rs_result = analyze_rs_metrics(indicator_df, benchmark_df)
+        indicator_df['RS_Rating'] = rs_result['rs_rating']
+
+        stage_detector = StageDetector(indicator_df)
+        stage, sub_stage = stage_detector.determine_stage()
 
         scorer = ScoringSystem(indicator_df, ticker, benchmark_df)
         result = scorer.comprehensive_analysis()
@@ -62,18 +68,21 @@ def analyze_ticker(args):
     except Exception as e:
         # print(f"Could not analyze {ticker}: {e}")
         return None
-    return None
 
 def main():
     """
     Main function to run the screener.
     """
+    parser = argparse.ArgumentParser(description='Stock Screener')
+    parser.add_argument('--sequential', action='store_true', help='Run the analysis sequentially instead of in parallel.')
+    args = parser.parse_args()
+
     print("Starting stock screener with new filtering conditions...")
 
     try:
         stock_list_df = pd.read_csv('stock.csv')
         stock_list_df.dropna(subset=['Ticker'], inplace=True)
-        tickers = [(row['Ticker'], row['Exchange']) for index, row in stock_list_df.iterrows()]
+        tickers = [(row['Ticker'], row['Exchange']) for index, row in stock_list_df.head(10).iterrows()]
     except FileNotFoundError:
         print("Error: stock.csv not found. Please run get_tickers.py first.")
         return
@@ -99,10 +108,15 @@ def main():
     args_list = [(ticker, exchange, benchmark_df_dict) for ticker, exchange in tickers]
 
     # Use multiprocessing to speed up the analysis
-    with Pool(cpu_count()) as pool:
-        for result in tqdm(pool.imap_unordered(analyze_ticker, args_list), total=len(tickers), desc="Analyzing Stocks"):
+    if args.sequential:
+        for result in tqdm(map(analyze_ticker, args_list), total=len(tickers), desc="Analyzing Stocks"):
             if result:
                 results.append(result)
+    else:
+        with Pool(cpu_count()) as pool:
+            for result in tqdm(pool.imap_unordered(analyze_ticker, args_list), total=len(tickers), desc="Analyzing Stocks"):
+                if result:
+                    results.append(result)
 
     if not results:
         print("No stocks passed the initial analysis.")
