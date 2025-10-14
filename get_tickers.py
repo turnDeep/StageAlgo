@@ -1,8 +1,13 @@
 import pandas as pd
+import yfinance as yf
+from curl_cffi.requests import Session
+from tqdm import tqdm
+import time
 
 def get_and_save_tickers():
     """
     DataHub.ioからNASDAQとNYSEのティッカーリストを取得し、
+    yfinanceで会社名を確認してETF/Fundを除外した後、
     取引所情報を付与して1つのCSVファイルに保存します。
     """
     # 1. CSVファイルのURLを定義
@@ -60,11 +65,65 @@ def get_and_save_tickers():
     count_after_dollar = len(combined_df)
     print(f"'$'を含むティッカーを除外: {count_after_suffix - count_after_dollar} 件")
 
+    # 5. yfinanceでETF/Fundを除外
+    print("\nyfinanceで会社名を取得し、ETF/Fundを除外します...")
+    print("※ この処理には時間がかかります（数分〜十数分）")
+    
+    # curl-cffiのSessionを作成（API制限回避）
+    yf_session = Session(impersonate="safari15_5")
+    
+    batch_size = 30  # HanaViewと同じバッチサイズ
+    tickers_to_check = combined_df['Ticker'].tolist()
+    valid_tickers = []
+    etf_fund_count = 0
+    error_count = 0
+    
+    for i in tqdm(range(0, len(tickers_to_check), batch_size), desc="銘柄情報取得中"):
+        batch = tickers_to_check[i:i+batch_size]
+        
+        for ticker_symbol in batch:
+            try:
+                ticker_obj = yf.Ticker(ticker_symbol, session=yf_session)
+                info = ticker_obj.info
+                
+                # 会社名を取得
+                company_name = info.get('shortName', '') or info.get('longName', '')
+                
+                # ETFまたはFundが含まれているかチェック
+                if company_name:
+                    name_upper = company_name.upper()
+                    if 'ETF' in name_upper or 'FUND' in name_upper:
+                        etf_fund_count += 1
+                        continue
+                
+                # quoteTypeでも二重チェック
+                quote_type = info.get('quoteType', '')
+                if quote_type in ['ETF', 'MUTUALFUND']:
+                    etf_fund_count += 1
+                    continue
+                
+                # 通過した銘柄を有効リストに追加
+                valid_tickers.append(ticker_symbol)
+                
+            except Exception as e:
+                # エラーが出た銘柄は念のため除外
+                error_count += 1
+                continue
+        
+        # バッチ間で待機（API制限回避）
+        if i + batch_size < len(tickers_to_check):
+            time.sleep(3)
+    
+    print(f"\nETF/Fund除外: {etf_fund_count} 件")
+    print(f"エラー/データ取得失敗: {error_count} 件")
+    
+    # 6. 有効なティッカーのみでDataFrameを再構築
+    combined_df = combined_df[combined_df['Ticker'].isin(valid_tickers)].copy()
+    
     final_count = len(combined_df)
-    print(f"フィルタリングにより {initial_count - final_count} 件のティッカーが除外されました。")
-    print(f"フィルタリング後、{final_count} 件のティッカーが残りました。")
+    print(f"最終的に {final_count} 件のティッカーが残りました。")
 
-    # 5. stock.csvに保存（ヘッダー付き、インデックスなし）
+    # 7. stock.csvに保存（ヘッダー付き、インデックスなし）
     try:
         combined_df.to_csv('stock.csv', index=False, columns=['Ticker', 'Exchange'])
         print("ティッカーリストを stock.csv に正常に保存しました。")
