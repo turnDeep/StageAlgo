@@ -36,7 +36,7 @@ def analyze_ticker(args):
             return None
 
         stage_detector = StageDetector(indicator_df)
-        stage, sub_stage, _ = stage_detector.detect_stage()
+        stage, sub_stage = stage_detector.determine_stage()
 
         benchmark_df = pd.DataFrame(benchmark_df_dict)
         benchmark_df.index = pd.to_datetime(benchmark_df.index)
