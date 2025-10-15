@@ -14,7 +14,6 @@ from data_fetcher import fetch_stock_data
 from indicators import calculate_all_basic_indicators
 from stage_detector import StageDetector
 from scoring_system import ScoringSystem
-from rs_calculator import calculate_rs_rating_series
 
 warnings.filterwarnings('ignore')
 
@@ -36,16 +35,9 @@ def analyze_ticker(args):
         if len(indicator_df) < 252:
             return None
 
-        # RS Ratingの計算を追加
-        indicator_df['RS_Rating'] = calculate_rs_rating_series(indicator_df)
-        indicator_df = indicator_df.dropna()
-        if len(indicator_df) < 252: # 再度チェック
-            return None
-
         stage_detector = StageDetector(indicator_df)
         stage, sub_stage = stage_detector.determine_stage()
 
-        benchmark_df = pd.DataFrame(benchmark_df_dict)
         benchmark_df.index = pd.to_datetime(benchmark_df.index)
 
         scorer = ScoringSystem(indicator_df, ticker, benchmark_df)
@@ -69,7 +61,6 @@ def analyze_ticker(args):
     except Exception as e:
         # print(f"Could not analyze {ticker}: {e}")
         return None
-    return None
 
 def main():
     """
