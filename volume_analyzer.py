@@ -1,6 +1,11 @@
 """
-出来高分析モジュール
-Wyckoff理論 + O'Neil + Minerviniの統合
+出来高分析モジュール（Stage統合版）
+Wyckoff理論 + O'Neil + Minervini + Stan Weinsteinの統合
+
+【改善点】
+1. Stage別の出来高判定基準を追加
+2. Dry up（出来高減少）とSurge（出来高急増）の明確な検出
+3. Stage移行時の出来高検証機能
 """
 import pandas as pd
 import numpy as np
@@ -9,12 +14,13 @@ from typing import Dict, Optional, Tuple
 
 class VolumeAnalyzer:
     """
-    出来高分析システム
+    出来高分析システム（Stage統合版）
     
     理論的基盤:
     - Wyckoffの三大法則（供給と需要、原因と結果、努力と結果）
     - O'Neilのブレイクアウト出来高理論
     - MinerviniのDry Up概念
+    - Stan WeinsteinのStage別出来高パターン
     """
     
     def __init__(self, df: pd.DataFrame):
@@ -71,6 +77,340 @@ class VolumeAnalyzer:
             'down_days_count': len(down_days)
         }
     
+    def detect_dry_up(self, lookback: int = 20) -> Dict:
+        """
+        Dry Up（出来高減少）を検出
+        
+        Stage 1後期やベース右側での出来高減少
+        
+        Args:
+            lookback: 確認期間
+            
+        Returns:
+            dict: Dry up検出結果
+        """
+        recent_data = self.df.tail(lookback)
+        
+        if 'Volume_SMA_50' not in recent_data.columns:
+            return {
+                'detected': False,
+                'reason': 'Volume_SMA_50が存在しません'
+            }
+        
+        # 最近の平均出来高と50日平均出来高の比較
+        recent_avg_volume = recent_data['Volume'].mean()
+        avg_volume_sma = recent_data['Volume_SMA_50'].mean()
+        
+        if avg_volume_sma > 0:
+            dry_up_ratio = recent_avg_volume / avg_volume_sma
+        else:
+            return {
+                'detected': False,
+                'reason': '出来高データ不足'
+            }
+        
+        # Dry up判定基準
+        # - 最近の平均出来高が50日平均の50%以下
+        # - トレンドが減少傾向
+        is_dry_up = dry_up_ratio < 0.50
+        
+        # 減少トレンドの確認
+        mid_point = len(recent_data) // 2
+        first_half_avg = recent_data['Volume'].iloc[:mid_point].mean()
+        second_half_avg = recent_data['Volume'].iloc[mid_point:].mean()
+        
+        decreasing_trend = second_half_avg < first_half_avg
+        
+        if is_dry_up and decreasing_trend:
+            return {
+                'detected': True,
+                'dry_up_ratio': dry_up_ratio,
+                'recent_avg': recent_avg_volume,
+                'baseline_avg': avg_volume_sma,
+                'interpretation': 'Stage 1後期、供給が枯渇、ブレイクアウト準備の兆候',
+                'quality': 'excellent' if dry_up_ratio < 0.30 else 'good'
+            }
+        
+        return {
+            'detected': False,
+            'dry_up_ratio': dry_up_ratio,
+            'reason': '出来高減少が不十分'
+        }
+    
+    def detect_volume_surge(self, threshold: float = 2.0) -> Dict:
+        """
+        出来高Surge（急増）を検出
+        
+        Stage 2ブレイクアウト時やStage 4 Selling Climax時
+        
+        Args:
+            threshold: 出来高倍率の閾値（デフォルト2.0倍）
+            
+        Returns:
+            dict: Surge検出結果
+        """
+        if 'Relative_Volume' not in self.df.columns:
+            return {
+                'detected': False,
+                'reason': 'Relative_Volume列が存在しません'
+            }
+        
+        current_rvol = self.latest['Relative_Volume']
+        
+        # Surge判定
+        is_surge = current_rvol >= threshold
+        
+        if is_surge:
+            # 価格変動を確認して分類
+            current_close = self.latest['Close']
+            prev_close = self.df['Close'].iloc[-2] if len(self.df) >= 2 else current_close
+            
+            price_change_pct = ((current_close - prev_close) / prev_close * 100) if prev_close > 0 else 0
+            
+            if price_change_pct > 5:
+                surge_type = 'Breakout Surge'
+                interpretation = 'Stage 2ブレイクアウト、強力な買い需要'
+            elif price_change_pct < -5:
+                surge_type = 'Selling Climax'
+                interpretation = 'Stage 4パニック売り、底打ちの可能性'
+            else:
+                surge_type = 'Churning'
+                interpretation = 'Stage 3天井形成、分配の可能性'
+            
+            return {
+                'detected': True,
+                'relative_volume': current_rvol,
+                'surge_type': surge_type,
+                'price_change_pct': price_change_pct,
+                'interpretation': interpretation,
+                'quality': 'excellent' if current_rvol >= 3.0 else 'good'
+            }
+        
+        return {
+            'detected': False,
+            'relative_volume': current_rvol,
+            'reason': f'出来高が閾値{threshold}倍未満'
+        }
+    
+    def verify_stage_transition_volume(self, from_stage: int, to_stage: int) -> Dict:
+        """
+        Stage移行時の出来高を検証
+        
+        Args:
+            from_stage: 移行元のステージ
+            to_stage: 移行先のステージ
+            
+        Returns:
+            dict: 検証結果
+        """
+        surge = self.detect_volume_surge()
+        
+        # Stage 1 → Stage 2: 高出来高ブレイクアウトが必要
+        if from_stage == 1 and to_stage == 2:
+            if surge['detected'] and surge['surge_type'] == 'Breakout Surge':
+                return {
+                    'valid': True,
+                    'confidence': 'high',
+                    'message': 'Stage 2ブレイクアウト確認、高出来高でサポート',
+                    'volume_multiplier': surge['relative_volume']
+                }
+            else:
+                return {
+                    'valid': False,
+                    'confidence': 'low',
+                    'message': 'ブレイクアウトに必要な出来高が不足、偽ブレイクアウトの可能性',
+                    'volume_multiplier': surge.get('relative_volume', 0)
+                }
+        
+        # Stage 2 → Stage 3: 出来高増加とChurning
+        elif from_stage == 2 and to_stage == 3:
+            ratio_analysis = self.calculate_up_down_volume_ratio(20)
+            if ratio_analysis['pattern'] == 'Distribution':
+                return {
+                    'valid': True,
+                    'confidence': 'medium',
+                    'message': 'Stage 3移行、分配の兆候あり',
+                    'up_down_ratio': ratio_analysis['ratio']
+                }
+            else:
+                return {
+                    'valid': False,
+                    'confidence': 'medium',
+                    'message': 'Stage 3移行の出来高パターンが不明確',
+                    'up_down_ratio': ratio_analysis['ratio']
+                }
+        
+        # Stage 3 → Stage 4: 下抜け時の出来高
+        elif from_stage == 3 and to_stage == 4:
+            if surge['detected']:
+                return {
+                    'valid': True,
+                    'confidence': 'high',
+                    'message': 'Stage 4移行確認、高出来高でブレイクダウン',
+                    'volume_multiplier': surge['relative_volume']
+                }
+            else:
+                return {
+                    'valid': True,
+                    'confidence': 'medium',
+                    'message': 'Stage 4移行、出来高は中程度',
+                    'volume_multiplier': surge.get('relative_volume', 0)
+                }
+        
+        # Stage 4 → Stage 1: Selling Climaxの有無
+        elif from_stage == 4 and to_stage == 1:
+            if surge['detected'] and surge['surge_type'] == 'Selling Climax':
+                return {
+                    'valid': True,
+                    'confidence': 'high',
+                    'message': 'Selling Climax検出、Stage 1入りの可能性',
+                    'volume_multiplier': surge['relative_volume']
+                }
+            else:
+                return {
+                    'valid': True,
+                    'confidence': 'low',
+                    'message': 'Stage 1移行、Selling Climaxは未検出',
+                    'volume_multiplier': surge.get('relative_volume', 0)
+                }
+        
+        return {
+            'valid': False,
+            'confidence': 'low',
+            'message': f'Stage {from_stage} → {to_stage}の移行は想定外',
+        }
+    
+    def analyze_volume_for_stage(self, stage: int, substage: str) -> Dict:
+        """
+        Stage別の出来高分析
+        
+        Args:
+            stage: 現在のステージ
+            substage: サブステージ
+            
+        Returns:
+            dict: Stage別の出来高評価
+        """
+        result = {
+            'stage': stage,
+            'substage': substage,
+            'volume_assessment': '',
+            'action': '',
+            'quality_score': 0
+        }
+        
+        # Stage 1の出来高分析
+        if stage == 1:
+            dry_up = self.detect_dry_up(20)
+            ratio_analysis = self.calculate_up_down_volume_ratio(20)
+            
+            if substage == '1B':
+                # ブレイクアウト準備中
+                if dry_up['detected']:
+                    result['volume_assessment'] = 'Excellent - Dry up確認、供給枯渇'
+                    result['action'] = 'ブレイクアウト監視、高出来高での上抜けを待つ'
+                    result['quality_score'] = 90
+                else:
+                    result['volume_assessment'] = 'Moderate - さらなる出来高減少を待つ'
+                    result['action'] = '監視継続'
+                    result['quality_score'] = 60
+            
+            elif substage == '1':
+                # ベース形成中
+                if ratio_analysis['pattern'] == 'Accumulation':
+                    result['volume_assessment'] = 'Good - 蓄積の兆候'
+                    result['action'] = 'ベース発展を監視'
+                    result['quality_score'] = 70
+                else:
+                    result['volume_assessment'] = 'Neutral - 様子見'
+                    result['action'] = '蓄積パターン待ち'
+                    result['quality_score'] = 50
+            
+            else:  # 1A
+                result['volume_assessment'] = 'Early - ベース形成初期'
+                result['action'] = 'さらなる時間が必要'
+                result['quality_score'] = 40
+        
+        # Stage 2の出来高分析
+        elif stage == 2:
+            surge = self.detect_volume_surge()
+            ratio_analysis = self.calculate_up_down_volume_ratio(20)
+            
+            if substage == '2A':
+                # 上昇初期
+                if surge['detected'] and surge['surge_type'] == 'Breakout Surge':
+                    result['volume_assessment'] = 'Excellent - 強力なブレイクアウト'
+                    result['action'] = '積極的エントリー検討'
+                    result['quality_score'] = 95
+                elif ratio_analysis['pattern'] == 'Accumulation':
+                    result['volume_assessment'] = 'Good - 健全な需要'
+                    result['action'] = 'エントリー検討'
+                    result['quality_score'] = 80
+                else:
+                    result['volume_assessment'] = 'Weak - 出来高不足'
+                    result['action'] = '偽ブレイクアウトに注意'
+                    result['quality_score'] = 40
+            
+            elif substage == '2':
+                # 上昇中期
+                if ratio_analysis['pattern'] == 'Accumulation':
+                    result['volume_assessment'] = 'Good - 上昇継続の可能性'
+                    result['action'] = 'ホールド、押し目買い検討'
+                    result['quality_score'] = 75
+                else:
+                    result['volume_assessment'] = 'Warning - 需要減少の兆候'
+                    result['action'] = '注意深く監視'
+                    result['quality_score'] = 55
+            
+            else:  # 2B
+                # 上昇後期
+                if ratio_analysis['pattern'] == 'Distribution':
+                    result['volume_assessment'] = 'Caution - 分配の兆候'
+                    result['action'] = '利確検討、新規エントリー非推奨'
+                    result['quality_score'] = 30
+                else:
+                    result['volume_assessment'] = 'Late Stage - 慎重に'
+                    result['action'] = 'タイトなストップロス'
+                    result['quality_score'] = 50
+        
+        # Stage 3の出来高分析
+        elif stage == 3:
+            ratio_analysis = self.calculate_up_down_volume_ratio(20)
+            surge = self.detect_volume_surge()
+            
+            if ratio_analysis['pattern'] == 'Distribution':
+                result['volume_assessment'] = 'Distribution Confirmed - 分配進行中'
+                result['action'] = '速やかに利確、新規エントリー回避'
+                result['quality_score'] = 20
+            elif surge['detected'] and surge['surge_type'] == 'Churning':
+                result['volume_assessment'] = 'Churning - 激しい変動'
+                result['action'] = 'ポジション削減推奨'
+                result['quality_score'] = 25
+            else:
+                result['volume_assessment'] = 'Topping - 天井形成の可能性'
+                result['action'] = 'ポジション削減検討'
+                result['quality_score'] = 35
+        
+        # Stage 4の出来高分析
+        elif stage == 4:
+            surge = self.detect_volume_surge()
+            
+            if surge['detected'] and surge['surge_type'] == 'Selling Climax':
+                if substage == '4B-':
+                    result['volume_assessment'] = 'Selling Climax - 底打ちの可能性'
+                    result['action'] = 'Stage 1入り監視開始'
+                    result['quality_score'] = 50
+                else:
+                    result['volume_assessment'] = 'Selling Climax - パニック売り'
+                    result['action'] = 'ロング回避、底打ち待ち'
+                    result['quality_score'] = 30
+            else:
+                result['volume_assessment'] = 'Declining - 下降継続'
+                result['action'] = 'ロングポジション回避'
+                result['quality_score'] = 10
+        
+        return result
+    
     def detect_pocket_pivot(self, lookback: int = 10) -> Dict:
         """
         Pocket Pivot (O'Neil/Minervini)を検出
@@ -108,12 +448,13 @@ class VolumeAnalyzer:
         if 'EMA_8' in self.df.columns:
             ema_8 = self.latest['EMA_8']
             current_price = self.latest['Close']
-            near_ema = 0.97 <= current_price / ema_8 <= 1.03
+            near_ema = 0.97 <= current_price / ema_8 <= 1.03 if ema_8 > 0 else False
         else:
             near_ema = False
+            ema_8 = None
         
         # Pocket Pivot判定
-        if current_volume > max_down_volume and (near_ema or current_price > ema_8):
+        if current_volume > max_down_volume and (near_ema or (ema_8 and current_price > ema_8)):
             return {
                 'detected': True,
                 'current_volume': current_volume,
@@ -163,119 +504,6 @@ class VolumeAnalyzer:
         
         return count
     
-    def detect_climax_volume(self, lookback: int = 60) -> Dict:
-        """
-        Climax Volume (Selling/Buying Climax)を検出
-        
-        Args:
-            lookback: 確認期間
-            
-        Returns:
-            dict: Climax検出結果
-        """
-        recent_data = self.df.tail(lookback)
-        
-        # 最高出来高の日を検出
-        max_volume_idx = recent_data['Volume'].idxmax()
-        max_volume_day = recent_data.loc[max_volume_idx]
-        
-        # その日の価格レンジ
-        day_range = max_volume_day['High'] - max_volume_day['Low']
-        avg_range = (recent_data['High'] - recent_data['Low']).mean()
-        
-        # 終値の位置（レンジ内）
-        if day_range > 0:
-            close_position = (max_volume_day['Close'] - max_volume_day['Low']) / day_range
-        else:
-            close_position = 0.5
-        
-        # Climax判定
-        is_climax = max_volume_day['Volume'] > recent_data['Volume'].mean() * 2.5
-        
-        if is_climax:
-            if close_position >= 0.5 and max_volume_day['Close'] < max_volume_day['Open']:
-                # Selling Climax
-                climax_type = 'Selling Climax'
-                interpretation = 'パニック売りの頂点、弱気筋の降伏'
-                implication = 'Stage 4末期 → Stage 1への移行可能性'
-            elif close_position < 0.5 and max_volume_day['Close'] > max_volume_day['Open']:
-                # Buying Climax
-                climax_type = 'Buying Climax'
-                interpretation = '強気筋の降伏(遅れた参入)、分配'
-                implication = 'Stage 2末期 → Stage 3への移行可能性'
-            else:
-                climax_type = 'Neutral Climax'
-                interpretation = '高出来高だが明確な方向性なし'
-                implication = '継続監視'
-            
-            return {
-                'detected': True,
-                'type': climax_type,
-                'date': max_volume_idx,
-                'volume': max_volume_day['Volume'],
-                'close_position': close_position,
-                'interpretation': interpretation,
-                'implication': implication
-            }
-        
-        return {
-            'detected': False,
-            'reason': '出来高が基準未達'
-        }
-    
-    def determine_wyckoff_phase(self) -> Dict:
-        """
-        Wyckoffの蓄積/分配フェーズを判定
-        
-        Returns:
-            dict: フェーズ情報
-        """
-        # Selling Climax検出
-        selling_climax = self.detect_climax_volume(60)
-        
-        # 出来高トレンド
-        volume_trend = self.calculate_up_down_volume_ratio(20)
-        
-        # Pocket Pivot
-        pocket_pivots = self.count_pocket_pivots(20)
-        
-        # フェーズ判定ロジック
-        if selling_climax['detected'] and selling_climax['type'] == 'Selling Climax':
-            # Phase A: Selling Climax検出
-            phase = 'Phase A'
-            description = 'Selling Climax検出、パニック売りの頂点'
-            
-        elif volume_trend['pattern'] == 'Accumulation' and pocket_pivots >= 2:
-            # Phase C-D: 蓄積が進行中
-            if pocket_pivots >= 3:
-                phase = 'Phase D'
-                description = 'Sign of Strength (SOS)、需要が供給を圧倒'
-            else:
-                phase = 'Phase C'
-                description = 'Spring/Shakeout、最後の弱気筋の一掃'
-                
-        elif volume_trend['pattern'] == 'Accumulation':
-            # Phase B: 横ばい取引、供給の枯渇
-            phase = 'Phase B'
-            description = '横ばい取引、供給の枯渇が進行中'
-            
-        elif volume_trend['pattern'] == 'Distribution':
-            # 分配フェーズ
-            phase = 'Distribution'
-            description = '機関投資家が分配中、警戒が必要'
-            
-        else:
-            phase = 'Undefined'
-            description = '明確なフェーズ判定不可'
-        
-        return {
-            'phase': phase,
-            'description': description,
-            'selling_climax': selling_climax['detected'],
-            'volume_pattern': volume_trend['pattern'],
-            'pocket_pivots_count': pocket_pivots
-        }
-    
     def calculate_volume_score(self) -> Dict:
         """
         出来高総合スコアを計算（100点満点）
@@ -283,7 +511,7 @@ class VolumeAnalyzer:
         内訳:
         - Up/Down比率スコア (40点)
         - Pocket Pivot (20点)
-        - Wyckoff蓄積確認 (20点)
+        - Dry up/Surge (20点)
         - OBV状態 (20点)
         """
         score = 0
@@ -327,26 +555,27 @@ class VolumeAnalyzer:
         details['pp_score'] = pp_score
         details['pocket_pivots'] = pp_count
         
-        # 3. Wyckoff蓄積確認 (20点)
-        wyckoff = self.determine_wyckoff_phase()
-        phase = wyckoff['phase']
+        # 3. Dry up/Surge (20点)
+        dry_up = self.detect_dry_up(20)
+        surge = self.detect_volume_surge()
         
-        if phase in ['Phase D', 'Phase E']:
-            wyckoff_score = 20
-            details['wyckoff_rating'] = 'A'
-        elif phase == 'Phase C':
-            wyckoff_score = 15
-            details['wyckoff_rating'] = 'B'
-        elif phase == 'Phase B':
-            wyckoff_score = 10
-            details['wyckoff_rating'] = 'C'
+        if dry_up['detected'] and dry_up.get('quality') == 'excellent':
+            dry_surge_score = 20
+            details['dry_surge_rating'] = 'A'
+        elif surge['detected'] and surge.get('quality') == 'excellent':
+            dry_surge_score = 20
+            details['dry_surge_rating'] = 'A'
+        elif dry_up['detected'] or surge['detected']:
+            dry_surge_score = 15
+            details['dry_surge_rating'] = 'B'
         else:
-            wyckoff_score = 5
-            details['wyckoff_rating'] = 'D'
+            dry_surge_score = 5
+            details['dry_surge_rating'] = 'C'
         
-        score += wyckoff_score
-        details['wyckoff_score'] = wyckoff_score
-        details['wyckoff_phase'] = phase
+        score += dry_surge_score
+        details['dry_surge_score'] = dry_surge_score
+        details['dry_up_detected'] = dry_up['detected']
+        details['surge_detected'] = surge['detected']
         
         # 4. OBV状態 (20点)
         if 'OBV' in self.df.columns and len(self.df) >= 50:
@@ -383,12 +612,15 @@ if __name__ == '__main__':
     from data_fetcher import fetch_stock_data
     from indicators import calculate_all_basic_indicators
     
-    print("出来高分析のテストを開始...")
+    print("出来高分析（Stage統合版）のテストを開始...")
     
     test_tickers = ['AAPL', 'TSLA', 'NVDA']
     
     for ticker in test_tickers:
-        print(f"\n{ticker} の出来高分析:")
+        print(f"\n{'='*60}")
+        print(f"{ticker} の出来高分析:")
+        print(f"{'='*60}")
+        
         stock_df, _ = fetch_stock_data(ticker, period='2y')
         
         if stock_df is not None:
@@ -400,7 +632,8 @@ if __name__ == '__main__':
                 
                 # スコア計算
                 score_result = analyzer.calculate_volume_score()
-                print(f"  総合スコア: {score_result['total_score']}/100")
-                print(f"  Up/Down比率: {score_result['up_down_ratio']:.2f}")
-                print(f"  Wyckoffフェーズ: {score_result['wyckoff_phase']}")
-                print(f"  Pocket Pivots: {score_result['pocket_pivots']}回")
+                print(f"総合スコア: {score_result['total_score']}/100")
+                print(f"Up/Down比率: {score_result['up_down_ratio']:.2f}")
+                print(f"Pocket Pivots: {score_result['pocket_pivots']}回")
+                print(f"Dry up検出: {score_result['dry_up_detected']}")
+                print(f"Surge検出: {score_result['surge_detected']}")
