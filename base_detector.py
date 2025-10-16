@@ -1,39 +1,63 @@
 """
-ベースパターン分析モジュール（リファクタリング版）
-William O'Neilのベース理論を実装
+ベースパターン分析モジュール（完全版 - StageDetector連携）
+William O'NeilとMark Minerviniのベース理論を完全実装
 
-【重要な設計変更】
-1. ステージ判定はStageDetectorに完全委譲
-2. ベースパターンの検出と品質評価に特化
-3. StageDetectorと連携してStage情報を活用
-4. ベースカウンティングとブレイクアウト検出が主機能
-5. ベースタイプの分類機能は削除（シンプル化）
+【責任分担】
+✓ ステージ判定 → stage_detector.py（StageDetector）が担当
+✓ ベースカウンティング → base_detector.py（このファイル）が担当
+
+【重要な実装】
+1. 20%ルールによるベースカウントリセット
+2. ベースパターンの検出と品質評価
+3. ブレイクアウト検出と検証
+4. ベースカウンティング（早期/後期の判定）
+5. StageDetectorとの完全連携
+
+【20%ルール - MarketSmith Indiaより】
+- ピボットポイントから現在のベースの左側高値まで20%以上上昇
+  → Stage数値的に増加（Stage 1 → Stage 2）
+- 20%未満の上昇
+  → Stageアルファベット的に増加（Stage 1a → Stage 1b）
+- 日中安値が前のベースの安値を下回る
+  → ベースステージとカウントは1にリセット
 """
 import pandas as pd
 import numpy as np
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, TYPE_CHECKING
+
+# 循環importを避けるための型チェック
+if TYPE_CHECKING:
+    from stage_detector import StageDetector
 
 
 class BaseDetector:
     """
-    ベースパターン分析システム（リファクタリング版）
+    ベースパターン分析システム（完全版 - StageDetector連携）
     
-    主な機能:
+    【このクラスの責任】
     - ベース期間の識別（横ばい統合期間）
+    - 20%ルールによるベースカウントリセット
     - ベース品質の評価
     - ブレイクアウトの検出と検証
-    - Stage 2内のベースカウンティング
+    - ベースカウンティング（1st, 2nd, 3rd, 4th+）
     
-    ※ ステージ判定はStageDetectorが担当
-    ※ ベースタイプの分類は行わない（シンプル化）
+    【StageDetectorの責任】
+    - Stage判定（Stage 1, 2, 3, 4）
+    - サブステージ判定（1A, 1, 1B等）
+    - Minerviniテンプレート判定
+    
+    【連携方法】
+    detector = BaseDetector(df)
+    stage_detector = StageDetector(df)
+    report = detector.analyze_with_stage(stage_detector)
     """
     
-    def __init__(self, df: pd.DataFrame, min_base_days: int = 20, max_base_days: int = 200):
+    def __init__(self, df: pd.DataFrame, min_base_days: int = 35, max_base_days: int = 325):
         """
         Args:
             df: 指標計算済みのDataFrame
-            min_base_days: ベースの最小期間（日数）、デフォルト20日≈4週間
-            max_base_days: ベースの最大期間（日数）、デフォルト200日≈40週間
+            min_base_days: ベースの最小期間（日数）、デフォルト35日≈7週間
+            max_base_days: ベースの最大期間（日数）、デフォルト325日≈65週間
         """
         self.df = df.copy()
         self.min_base_days = min_base_days
@@ -42,6 +66,7 @@ class BaseDetector:
         # ベース検出結果を格納
         self.bases = []
         self.breakouts = []
+        self.base_sequence = []  # ベースのシーケンス（カウント付き）
         
     def identify_bases(self) -> List[Dict]:
         """
@@ -52,7 +77,7 @@ class BaseDetector:
         2. 移動平均線が平坦化
         3. 最小期間以上継続
         
-        ※ ステージ情報は含めず、純粋にベースパターンのみ検出
+        ※ ステージ情報は含まない（純粋にベースパターンのみ）
         
         Returns:
             List[Dict]: 検出されたベースのリスト
@@ -78,11 +103,11 @@ class BaseDetector:
                 cv = price_std / price_mean if price_mean > 0 else 999
                 
                 # ベース判定基準
-                if cv < 0.10:  # 変動係数が10%未満
+                if cv < 0.12:  # 変動係数が12%未満
                     # 移動平均の傾きをチェック
                     if 'SMA_50' in window_data.columns:
                         ma_slope = self._calculate_slope(window_data['SMA_50'])
-                        ma_flat = abs(ma_slope) < 0.02
+                        ma_flat = abs(ma_slope) < 0.025
                     else:
                         ma_flat = True
                     
@@ -113,7 +138,7 @@ class BaseDetector:
         ベースの詳細情報を分析
         
         Returns:
-            Dict: ベース情報
+            Dict: ベース情報（ステージ情報なし）
         """
         high = window_data['High'].max()
         low = window_data['Low'].min()
@@ -176,8 +201,6 @@ class BaseDetector:
         slope = np.polyfit(x, y, 1)[0]
         return slope
     
-
-    
     def calculate_base_quality_score(self, base: Dict) -> Dict:
         """
         ベースの品質を100点満点で評価
@@ -228,6 +251,9 @@ class BaseDetector:
         elif (10 <= depth < 12) or (35 < depth <= 40):
             depth_score = 15
             details['depth_rating'] = 'C'
+        elif depth > 60:
+            depth_score = 0
+            details['depth_rating'] = 'F (Too Deep - Failure Prone)'
         else:
             depth_score = 5
             details['depth_rating'] = 'D'
@@ -275,46 +301,7 @@ class BaseDetector:
         
         return details
     
-    def count_bases_in_stage(self, stage: int, stage_detector=None) -> int:
-        """
-        指定されたStage内のベース数をカウント
-        
-        Args:
-            stage: カウント対象のステージ（1, 2, 3, 4）
-            stage_detector: StageDetectorインスタンス（必須）
-            
-        Returns:
-            int: 指定Stage内で検出されたベース数
-        """
-        if not self.bases:
-            self.identify_bases()
-        
-        if stage_detector is None:
-            # StageDetectorがない場合は簡易判定（非推奨）
-            return len(self.bases)
-        
-        stage_bases = 0
-        
-        for base in self.bases:
-            # ベース期間の中間点でステージをチェック
-            try:
-                base_mid_idx = self.df.index.get_loc(base['start_date']) + \
-                              (self.df.index.get_loc(base['end_date']) - self.df.index.get_loc(base['start_date'])) // 2
-            except KeyError:
-                continue
-            
-            if base_mid_idx < len(self.df):
-                # その時点までのデータでStage判定
-                temp_df = self.df.iloc[:base_mid_idx+1].copy()
-                temp_detector = stage_detector.__class__(temp_df)
-                detected_stage, _ = temp_detector.determine_stage()
-                
-                if detected_stage == stage:
-                    stage_bases += 1
-        
-        return stage_bases
-    
-    def detect_breakouts(self, volume_multiplier: float = 1.5, stage_detector=None) -> List[Dict]:
+    def detect_breakouts(self, volume_multiplier: float = 1.5) -> List[Dict]:
         """
         各ベースからのブレイクアウトを検出
         
@@ -322,11 +309,11 @@ class BaseDetector:
         1. 価格がベースの高値（ピボットポイント）を上抜ける
         2. 出来高が平均の1.5倍以上（パラメータ調整可能）
         3. 終値がブレイクアウトレベルの上
-        4. （オプション）Stage情報を記録
+        
+        ※ Stage情報は含まない（純粋にブレイクアウトのみ）
         
         Args:
             volume_multiplier: 出来高倍率の閾値（デフォルト1.5倍）
-            stage_detector: StageDetectorインスタンス（オプション）
             
         Returns:
             List[Dict]: 検出されたブレイクアウトのリスト
@@ -337,21 +324,19 @@ class BaseDetector:
         self.breakouts = []
         
         for base in self.bases:
-            breakout = self._detect_breakout_from_base(base, volume_multiplier, stage_detector)
+            breakout = self._detect_breakout_from_base(base, volume_multiplier)
             if breakout:
                 self.breakouts.append(breakout)
         
         return self.breakouts
     
-    def _detect_breakout_from_base(self, base: Dict, volume_multiplier: float, 
-                                   stage_detector=None) -> Optional[Dict]:
+    def _detect_breakout_from_base(self, base: Dict, volume_multiplier: float) -> Optional[Dict]:
         """
         特定のベースからのブレイクアウトを検出
         
         Args:
             base: ベース情報
             volume_multiplier: 出来高倍率
-            stage_detector: StageDetectorインスタンス（オプション）
             
         Returns:
             Optional[Dict]: ブレイクアウト情報（なければNone）
@@ -377,14 +362,6 @@ class BaseDetector:
             volume_surge = current_bar['Volume'] > base_avg_volume * volume_multiplier
             
             if price_breakout and high_breakout and volume_surge:
-                # Stage判定（StageDetectorがある場合）
-                stage = None
-                substage = None
-                if stage_detector is not None:
-                    temp_df = self.df.iloc[:i+1].copy()
-                    temp_detector = stage_detector.__class__(temp_df)
-                    stage, substage = temp_detector.determine_stage()
-                
                 # ブレイクアウト確認
                 breakout_info = {
                     'base_start': base['start_date'],
@@ -397,9 +374,6 @@ class BaseDetector:
                     'volume_ratio': current_bar['Volume'] / base_avg_volume,
                     'base_depth_pct': base['depth_pct'],
                     'quality_score': self._calculate_breakout_quality(base, current_bar, base_avg_volume),
-                    'stage': stage,
-                    'substage': substage,
-                    'is_stage2': stage == 2 if stage is not None else None,
                 }
                 
                 return breakout_info
@@ -463,114 +437,23 @@ class BaseDetector:
         
         return score
     
-    def analyze_with_stage(self, stage_detector) -> Dict:
+    def apply_20_percent_rule(self) -> List[Dict]:
         """
-        StageDetectorと連携した包括的分析
+        【20%ルール適用】MarketSmith Indiaの基準に基づく
         
-        Args:
-            stage_detector: StageDetectorインスタンス（必須）
-            
-        Returns:
-            Dict: Stage情報を含む詳細な分析結果
-        """
-        # 現在のステージをStageDetectorから取得
-        current_stage, current_substage = stage_detector.determine_stage()
+        ルール:
+        1. ピボットポイントから現在のベースの左側高値まで20%以上上昇
+           → Stage数値的に増加（Stage 1 → Stage 2）
+        2. 20%未満の上昇
+           → Stageアルファベット的に増加（Stage 1a → Stage 1b）
+        3. 日中安値が前のベースの安値を下回る
+           → ベースステージとカウントは1にリセット
         
-        # ベースとブレイクアウトを検出（StageDetector連携）
-        if not self.bases:
-            self.identify_bases()
-        
-        self.detect_breakouts(volume_multiplier=1.5, stage_detector=stage_detector)
-        
-        # 基本レポート
-        report = {
-            'current_stage': current_stage,
-            'current_substage': current_substage,
-            'total_bases_detected': len(self.bases),
-            'total_breakouts_detected': len(self.breakouts),
-        }
-        
-        # Stage別の分析
-        if current_stage == 1:
-            # Stage 1: ベース分析に焦点
-            latest_base = self.bases[-1] if self.bases else None
-            
-            if latest_base:
-                # ベース品質評価
-                quality = self.calculate_base_quality_score(latest_base)
-                latest_base['quality_score'] = quality['total_score']
-                latest_base['quality_details'] = quality
-                
-                report['latest_base'] = latest_base
-                
-                # Stage 1での解釈
-                if current_substage == '1B':
-                    interpretation = 'Stage 1後期: ブレイクアウト準備中、高出来高での上抜けを監視'
-                    action = 'ウォッチリスト追加、ブレイクアウト待ち'
-                    priority = 'High'
-                elif current_substage == '1':
-                    interpretation = 'Stage 1中期: ベース形成中、蓄積フェーズ'
-                    action = '監視継続、ベース発展を待つ'
-                    priority = 'Medium'
-                else:  # 1A
-                    interpretation = 'Stage 1初期: ベース形成開始、まだ時間が必要'
-                    action = '監視のみ、エントリーは時期尚早'
-                    priority = 'Low'
-            else:
-                interpretation = 'Stage 1だがベース未検出'
-                action = 'ベース形成を待つ'
-                priority = 'Low'
-            
-            report['stage_interpretation'] = interpretation
-            report['stage_action'] = action
-            report['priority'] = priority
-        
-        elif current_stage == 2:
-            # Stage 2: ベースカウントとブレイクアウト分析
-            stage2_base_count = self.count_bases_in_stage(2, stage_detector)
-            stage2_breakouts = [bo for bo in self.breakouts if bo.get('is_stage2') is True]
-            
-            report['stage2_base_count'] = stage2_base_count
-            report['stage2_breakout_count'] = len(stage2_breakouts)
-            report['stage2_breakouts'] = stage2_breakouts
-            
-            # 最新ブレイクアウト
-            latest_breakout = self.breakouts[-1] if self.breakouts else None
-            if latest_breakout:
-                report['latest_breakout'] = latest_breakout
-            
-            # Stage 2での解釈（ベースカウント重視）
-            if stage2_base_count <= 2:
-                interpretation = f'Stage 2: 上昇期、ベース{stage2_base_count}個目（最良の機会）'
-                action = 'エントリー検討、特に1-2番目のベース後が理想的'
-            elif stage2_base_count == 3:
-                interpretation = f'Stage 2: 上昇期、ベース{stage2_base_count}個目（注意が必要）'
-                action = '慎重にエントリー検討、利確も視野に'
-            else:
-                interpretation = f'Stage 2: 上昇期、ベース{stage2_base_count}個目（後期の可能性）'
-                action = '新規エントリー非推奨、既存ポジションは利確検討'
-            
-            report['stage_interpretation'] = interpretation
-            report['stage_action'] = action
-        
-        elif current_stage == 3:
-            report['stage_interpretation'] = 'Stage 3: 天井形成期、分配フェーズ'
-            report['stage_action'] = '新規エントリー回避、既存ポジション撤退'
-        
-        elif current_stage == 4:
-            report['stage_interpretation'] = 'Stage 4: 下降期'
-            report['stage_action'] = 'ロングポジション回避、Stage 1入り待ち'
-        
-        return report
-    
-    def generate_report(self) -> Dict:
-        """
-        包括的な分析レポートを生成（Stage情報なし版）
-        
-        ※ Stage情報が必要な場合は analyze_with_stage() を使用
+        ※ このメソッドはベースカウンティングのみを行う
+        ※ Stage判定（Stage 1, 2, 3, 4）はStageDetectorが担当
         
         Returns:
-            Dict: 分析結果の要約
+            List[Dict]: ベースシーケンス（カウント付き）
         """
         if not self.bases:
             self.identify_bases()
@@ -578,42 +461,458 @@ class BaseDetector:
         if not self.breakouts:
             self.detect_breakouts()
         
-        # 最新ベース情報
-        latest_base = self.bases[-1] if self.bases else None
+        self.base_sequence = []
         
-        # 最新ブレイクアウト情報
-        latest_breakout = self.breakouts[-1] if self.breakouts else None
+        if not self.bases:
+            return self.base_sequence
         
-        # ベース数（直近1年）
-        one_year_ago = self.df.index[-1] - pd.Timedelta(days=252)
-        recent_bases = [b for b in self.bases if b['end_date'] >= one_year_ago]
+        # 初期状態
+        current_count = 1
+        current_stage_letter = ''
         
-        report = {
-            'total_bases_detected': len(self.bases),
-            'total_breakouts_detected': len(self.breakouts),
-            'recent_base_count_1yr': len(recent_bases),
-            'latest_base': latest_base,
-            'latest_breakout': latest_breakout,
+        for i, base in enumerate(self.bases):
+            base_info = {
+                'base_index': i,
+                'start_date': base['start_date'],
+                'end_date': base['end_date'],
+                'pivot_point': base['pivot_point'],
+                'base_low': base['low'],
+                'base_count': current_count,
+                'stage_letter': current_stage_letter,
+                'display_stage': f"{current_count}{current_stage_letter}",
+                'reset_reason': None,
+                'gain_from_prior_pivot_pct': 0,
+            }
+            
+            # 前のベースが存在する場合
+            if i > 0:
+                prior_base = self.bases[i - 1]
+                prior_pivot = prior_base['pivot_point']
+                current_base_left_high = base['high']  # 現在のベースの左側高値
+                
+                # ピボットから現在ベースの左側高値までの上昇率
+                gain_pct = ((current_base_left_high - prior_pivot) / prior_pivot * 100) if prior_pivot > 0 else 0
+                base_info['gain_from_prior_pivot_pct'] = gain_pct
+                
+                # 【リセットチェック1】前のベースの安値を下回ったか
+                prior_base_low = prior_base['low']
+                
+                # ベース期間中の最安値
+                base_data = self.df.loc[base['start_date']:base['end_date']]
+                intraday_low = base_data['Low'].min()
+                
+                if intraday_low < prior_base_low:
+                    # リセット条件満たす
+                    current_count = 1
+                    current_stage_letter = ''
+                    base_info['reset_reason'] = f'Undercut prior base low (${prior_base_low:.2f} vs ${intraday_low:.2f})'
+                    base_info['base_count'] = current_count
+                    base_info['stage_letter'] = current_stage_letter
+                    base_info['display_stage'] = f"{current_count}{current_stage_letter}"
+                
+                # 【20%ルール適用】
+                elif gain_pct >= 20.0:
+                    # 数値的にインクリメント
+                    current_count += 1
+                    current_stage_letter = ''
+                    base_info['base_count'] = current_count
+                    base_info['stage_letter'] = current_stage_letter
+                    base_info['display_stage'] = f"{current_count}{current_stage_letter}"
+                    base_info['reset_reason'] = f'20%+ gain from prior pivot ({gain_pct:.1f}%)'
+                
+                elif gain_pct > 0:
+                    # アルファベット的にインクリメント
+                    if current_stage_letter == '':
+                        current_stage_letter = 'a'
+                    elif current_stage_letter == 'a':
+                        current_stage_letter = 'b'
+                    elif current_stage_letter == 'b':
+                        current_stage_letter = 'c'
+                    else:
+                        # c以降はそのまま
+                        pass
+                    
+                    base_info['base_count'] = current_count
+                    base_info['stage_letter'] = current_stage_letter
+                    base_info['display_stage'] = f"{current_count}{current_stage_letter}"
+                    base_info['reset_reason'] = f'Sub-20% gain ({gain_pct:.1f}%)'
+            
+            self.base_sequence.append(base_info)
+        
+        return self.base_sequence
+    
+    def check_early_vs_late_stage(self) -> Dict:
+        """
+        早期ステージ vs 後期ステージの判定（Minerviniの基準）
+        
+        Minerviniの基準:
+        - 早期（1st, 2nd base）: 最良の機会
+        - 中期（3rd base）: まだ許容可能
+        - 後期（4th base以上）: 深い調整に陥りやすい、クライマックストップの可能性
+        
+        ※ これはベースカウントに基づく評価
+        ※ Stage判定（Stage 1, 2, 3, 4）とは別の概念
+        
+        Returns:
+            Dict: 早期/後期の評価
+        """
+        if not self.base_sequence:
+            self.apply_20_percent_rule()
+        
+        if not self.base_sequence:
+            return {
+                'total_bases': 0,
+                'latest_base_count': 0,
+                'stage_category': 'Unknown',
+                'recommendation': 'ベース未検出',
+                'risk_level': 'N/A',
+            }
+        
+        latest_base = self.base_sequence[-1]
+        base_count = latest_base['base_count']
+        
+        result = {
+            'total_bases': len(self.base_sequence),
+            'latest_base_count': base_count,
+            'latest_display_stage': latest_base['display_stage'],
+            'stage_category': '',
+            'recommendation': '',
+            'risk_level': '',
         }
         
-        # 解釈とアクション（Stage情報なし）
-        if latest_base and latest_base['distance_from_high_pct'] < 5:
-            report['interpretation'] = 'ブレイクアウト接近中'
-            report['action'] = 'ブレイクアウト監視、出来高確認必須'
-        elif latest_breakout:
-            days_since_breakout = (self.df.index[-1] - latest_breakout['breakout_date']).days
-            if days_since_breakout <= 10:
-                report['interpretation'] = '最近ブレイクアウト発生'
-                report['action'] = 'エントリー検討、ただし過熱に注意'
-            else:
-                report['interpretation'] = 'ブレイクアウト後'
-                report['action'] = 'プルバック待ちまたはトレンドフォロー'
-        elif latest_base:
-            report['interpretation'] = 'ベース形成中'
-            report['action'] = 'ブレイクアウト待ち、監視継続'
+        if base_count == 1:
+            result['stage_category'] = 'Early Stage (1st Base)'
+            result['recommendation'] = '最良の機会、積極的エントリー検討'
+            result['risk_level'] = 'Low'
+        elif base_count == 2:
+            result['stage_category'] = 'Early Stage (2nd Base)'
+            result['recommendation'] = '優れた機会、まだパブリックのレーダーに載っていない'
+            result['risk_level'] = 'Low'
+        elif base_count == 3:
+            result['stage_category'] = 'Mid Stage (3rd Base)'
+            result['recommendation'] = 'まだ許容可能だが、慎重に。一般に認知され始めている'
+            result['risk_level'] = 'Medium'
+        elif base_count >= 4:
+            result['stage_category'] = f'Late Stage ({base_count}th Base)'
+            result['recommendation'] = '深い調整に陥りやすい。新規エントリー非推奨、クライマックストップに警戒'
+            result['risk_level'] = 'High'
+        
+        return result
+    
+    def check_too_fast_surge(self, breakout_info: Dict) -> Dict:
+        """
+        早すぎる急騰の検出
+        
+        3週間（15営業日）以内に20%以上の上昇は「買われすぎ」のサイン
+        
+        Args:
+            breakout_info: ブレイクアウト情報
+            
+        Returns:
+            Dict: 急騰判定結果
+        """
+        pivot_point = breakout_info['pivot_point']
+        breakout_date = breakout_info['breakout_date']
+        
+        # ブレイクアウト後のデータ
+        try:
+            breakout_idx = self.df.index.get_loc(breakout_date)
+        except KeyError:
+            return {'too_fast': False, 'reason': 'データ不足'}
+        
+        # 3週間 = 15営業日をチェック
+        check_days = min(15, len(self.df) - breakout_idx - 1)
+        
+        if check_days < 5:
+            return {'too_fast': False, 'reason': 'データ不足'}
+        
+        data_after_breakout = self.df.iloc[breakout_idx:breakout_idx + check_days + 1]
+        
+        max_price = data_after_breakout['High'].max()
+        max_price_date = data_after_breakout['High'].idxmax()
+        days_to_max = (max_price_date - breakout_date).days
+        
+        gain_pct = ((max_price - pivot_point) / pivot_point) * 100
+        
+        result = {
+            'too_fast': False,
+            'gain_pct': gain_pct,
+            'days_to_max': days_to_max,
+            'max_price': max_price,
+            'max_price_date': max_price_date,
+        }
+        
+        # 15営業日以内に20%以上の上昇
+        if days_to_max <= 15 and gain_pct >= 20.0:
+            result['too_fast'] = True
+            result['warning'] = f'買われすぎ！{days_to_max}日で{gain_pct:.1f}%上昇。追いかけ買い危険、調整待ち推奨'
         else:
-            report['interpretation'] = 'ベース未検出'
-            report['action'] = 'ベース形成待ち'
+            result['too_fast'] = False
+            result['warning'] = None
+        
+        return result
+    
+    def analyze_with_stage(self, stage_detector: 'StageDetector') -> Dict:
+        """
+        【重要】StageDetectorと連携した包括的分析
+        
+        このメソッドは両者の責任を明確に分離:
+        - StageDetector: Stage判定（Stage 1/2/3/4, サブステージ）
+        - BaseDetector: ベースカウンティング（1st/2nd/3rd/4th base）
+        
+        Args:
+            stage_detector: StageDetectorインスタンス（必須）
+            
+        Returns:
+            Dict: Stage情報とベースカウント情報を統合した詳細な分析結果
+        """
+        # ベースとブレイクアウトを検出
+        if not self.bases:
+            self.identify_bases()
+        
+        if not self.breakouts:
+            self.detect_breakouts()
+        
+        if not self.base_sequence:
+            self.apply_20_percent_rule()
+        
+        # StageDetectorから現在のステージ情報を取得
+        current_stage, current_substage = stage_detector.determine_stage()
+        
+        # 早期/後期評価（ベースカウントベース）
+        early_late_assessment = self.check_early_vs_late_stage()
+        
+        # 基本レポート
+        report = {
+            # StageDetectorからの情報
+            'weinstein_stage': current_stage,
+            'weinstein_substage': current_substage,
+            
+            # BaseDetectorからの情報
+            'base_count_stage': early_late_assessment['latest_display_stage'] if self.base_sequence else 'N/A',
+            'base_count': early_late_assessment['latest_base_count'] if self.base_sequence else 0,
+            'base_count_category': early_late_assessment['stage_category'],
+            'base_count_risk_level': early_late_assessment['risk_level'],
+            
+            # 統計情報
+            'total_bases_detected': len(self.bases),
+            'total_breakouts_detected': len(self.breakouts),
+        }
+        
+        # ベースシーケンス情報
+        report['base_sequence'] = self.base_sequence
+        
+        # 最新ベース情報
+        if self.base_sequence:
+            latest_base_seq = self.base_sequence[-1]
+            corresponding_base = self.bases[latest_base_seq['base_index']]
+            
+            # ベース品質評価
+            quality = self.calculate_base_quality_score(corresponding_base)
+            
+            report['latest_base'] = {
+                'base_count_display': latest_base_seq['display_stage'],
+                'start_date': latest_base_seq['start_date'].strftime('%Y-%m-%d'),
+                'end_date': latest_base_seq['end_date'].strftime('%Y-%m-%d'),
+                'duration_weeks': corresponding_base['duration_weeks'],
+                'depth_pct': corresponding_base['depth_pct'],
+                'pivot_point': corresponding_base['pivot_point'],
+                'quality_score': quality['total_score'],
+                'quality_details': quality,
+            }
+        
+        # 最新ブレイクアウト情報
+        if self.breakouts:
+            latest_breakout = self.breakouts[-1]
+            
+            # 早すぎる急騰チェック
+            surge_check = self.check_too_fast_surge(latest_breakout)
+            
+            report['latest_breakout'] = {
+                'breakout_date': latest_breakout['breakout_date'].strftime('%Y-%m-%d'),
+                'breakout_price': latest_breakout['breakout_price'],
+                'volume_ratio': latest_breakout['volume_ratio'],
+                'quality_score': latest_breakout['quality_score'],
+                'too_fast_surge': surge_check,
+            }
+        
+        # 統合解釈とアクション（Weinstein StageとBase Countの両方を考慮）
+        report['integrated_analysis'] = self._integrate_stage_and_base_count(
+            current_stage, 
+            current_substage,
+            early_late_assessment,
+            report
+        )
+        
+        return report
+    
+    def _integrate_stage_and_base_count(self, weinstein_stage: int, weinstein_substage: str,
+                                       base_count_assessment: Dict, report: Dict) -> Dict:
+        """
+        Weinstein StageとBase Countを統合して最終判定
+        
+        Args:
+            weinstein_stage: Weinstein Stage (1, 2, 3, 4)
+            weinstein_substage: Weinstein Substage (1A, 1, 1B, etc.)
+            base_count_assessment: ベースカウント評価
+            report: 完全レポート
+            
+        Returns:
+            Dict: 統合分析結果
+        """
+        analysis = {
+            'priority': '',
+            'action': '',
+            'risk_assessment': '',
+            'detailed_interpretation': '',
+        }
+        
+        base_count = base_count_assessment.get('latest_base_count', 0)
+        
+        # Weinstein Stage 1: ベース形成期
+        if weinstein_stage == 1:
+            if weinstein_substage == '1B':
+                # Stage 1B + 早期ベース = 最良の機会
+                if base_count <= 2:
+                    analysis['priority'] = '最優先エントリー候補'
+                    analysis['action'] = f'Stage 1B（ブレイクアウト直前）+ {base_count_assessment["latest_display_stage"]} Base - 理想的なセットアップ！'
+                    analysis['risk_assessment'] = '低リスク'
+                    analysis['detailed_interpretation'] = 'Weinstein Stage 1後期でブレイクアウト準備完了、かつ早期ベースカウント。最良のエントリー機会。'
+                else:
+                    analysis['priority'] = '監視継続'
+                    analysis['action'] = f'Stage 1B + {base_count}th Base - やや後期だが監視価値あり'
+                    analysis['risk_assessment'] = '中リスク'
+                    analysis['detailed_interpretation'] = 'Stage 1Bだが、ベースカウントが多い。慎重に。'
+            
+            elif weinstein_substage in ['1', '1A']:
+                analysis['priority'] = '監視継続'
+                analysis['action'] = f'Stage {weinstein_substage} - ベース発展を待つ'
+                analysis['risk_assessment'] = '低リスク（時期尚早）'
+                analysis['detailed_interpretation'] = 'まだベース形成の初期〜中期。エントリーには時間が必要。'
+        
+        # Weinstein Stage 2: 上昇期
+        elif weinstein_stage == 2:
+            if weinstein_substage == '2A':
+                # Stage 2A（上昇初期）
+                if base_count <= 2:
+                    analysis['priority'] = '積極的エントリー'
+                    analysis['action'] = f'Stage 2A（上昇初期）+ {base_count_assessment["latest_display_stage"]} Base - 優れた機会'
+                    analysis['risk_assessment'] = '低リスク'
+                    analysis['detailed_interpretation'] = 'Stage 2初期でモメンタム強く、ベースカウントも早期。理想的なエントリーポイント。'
+                elif base_count == 3:
+                    analysis['priority'] = 'エントリー検討（慎重）'
+                    analysis['action'] = f'Stage 2A + 3rd Base - まだ許容可能'
+                    analysis['risk_assessment'] = '中リスク'
+                    analysis['detailed_interpretation'] = 'Stage 2Aだが3rd base。エントリー可能だが利確も視野に。'
+                else:
+                    analysis['priority'] = '新規エントリー非推奨'
+                    analysis['action'] = f'Stage 2A + {base_count}th Base - 後期、警戒'
+                    analysis['risk_assessment'] = '高リスク'
+                    analysis['detailed_interpretation'] = 'ベースカウントが多すぎる。新規エントリーは避けるべき。'
+            
+            elif weinstein_substage == '2':
+                # Stage 2（上昇中期）
+                if base_count <= 2:
+                    analysis['priority'] = 'エントリー検討'
+                    analysis['action'] = f'Stage 2中期 + {base_count_assessment["latest_display_stage"]} Base - 良好'
+                    analysis['risk_assessment'] = '低〜中リスク'
+                    analysis['detailed_interpretation'] = 'Stage 2中期、早期ベースカウント。プルバック待ちでエントリー。'
+                elif base_count == 3:
+                    analysis['priority'] = '慎重にエントリー検討'
+                    analysis['action'] = f'Stage 2中期 + 3rd Base - 注意が必要'
+                    analysis['risk_assessment'] = '中リスク'
+                    analysis['detailed_interpretation'] = '3rd base。エントリーは慎重に、利確計画必須。'
+                else:
+                    analysis['priority'] = '利確検討'
+                    analysis['action'] = f'Stage 2中期 + {base_count}th Base - 後期、利確優先'
+                    analysis['risk_assessment'] = '高リスク'
+                    analysis['detailed_interpretation'] = 'ベースカウント過多。既存ポジションは利確、新規エントリー非推奨。'
+            
+            elif weinstein_substage == '2B':
+                # Stage 2B（上昇後期）
+                analysis['priority'] = '利確準備'
+                analysis['action'] = f'Stage 2B（上昇後期）+ {base_count_assessment["latest_display_stage"]} Base - 天井近い可能性'
+                analysis['risk_assessment'] = '高リスク'
+                analysis['detailed_interpretation'] = 'Stage 2後期。ベースカウントに関わらず、利確準備必要。新規エントリー非推奨。'
+        
+        # Weinstein Stage 3: 天井形成期
+        elif weinstein_stage == 3:
+            analysis['priority'] = '撤退'
+            analysis['action'] = 'Stage 3（天井形成）- 分配フェーズ、積極的利確'
+            analysis['risk_assessment'] = '高リスク'
+            analysis['detailed_interpretation'] = f'Stage 3で分配フェーズ。ベースカウント{base_count}。新規エントリー絶対回避、既存ポジション速やかに撤退。'
+        
+        # Weinstein Stage 4: 下降期
+        elif weinstein_stage == 4:
+            analysis['priority'] = 'ロング回避'
+            analysis['action'] = 'Stage 4（下降期）- ロングポジション回避'
+            analysis['risk_assessment'] = '非常に高リスク'
+            analysis['detailed_interpretation'] = 'Stage 4下降期。ロングポジション完全回避。Stage 1入り待ち。'
+        
+        return analysis
+    
+    def generate_standalone_report(self) -> Dict:
+        """
+        StageDetectorなしでの基本レポート生成
+        
+        ※ ベースカウンティングのみ実施（Stage判定なし）
+        ※ 完全な分析にはanalyze_with_stage()を推奨
+        
+        Returns:
+            Dict: 基本的な分析結果
+        """
+        # ベース検出
+        if not self.bases:
+            self.identify_bases()
+        
+        # ブレイクアウト検出
+        if not self.breakouts:
+            self.detect_breakouts()
+        
+        # 20%ルール適用
+        if not self.base_sequence:
+            self.apply_20_percent_rule()
+        
+        # 早期/後期判定
+        stage_assessment = self.check_early_vs_late_stage()
+        
+        report = {
+            'note': 'StageDetectorなしの基本レポート。完全な分析にはanalyze_with_stage()を使用してください。',
+            'total_bases_detected': len(self.bases),
+            'total_breakouts_detected': len(self.breakouts),
+            'base_sequence': self.base_sequence,
+            'base_count_assessment': stage_assessment,
+        }
+        
+        # 最新ベース情報
+        if self.base_sequence:
+            latest_base_seq = self.base_sequence[-1]
+            corresponding_base = self.bases[latest_base_seq['base_index']]
+            
+            quality = self.calculate_base_quality_score(corresponding_base)
+            
+            report['latest_base'] = {
+                'base_count_display': latest_base_seq['display_stage'],
+                'start_date': latest_base_seq['start_date'].strftime('%Y-%m-%d'),
+                'end_date': latest_base_seq['end_date'].strftime('%Y-%m-%d'),
+                'duration_weeks': corresponding_base['duration_weeks'],
+                'depth_pct': corresponding_base['depth_pct'],
+                'pivot_point': corresponding_base['pivot_point'],
+                'quality_score': quality['total_score'],
+            }
+        
+        # 最新ブレイクアウト情報
+        if self.breakouts:
+            latest_breakout = self.breakouts[-1]
+            surge_check = self.check_too_fast_surge(latest_breakout)
+            
+            report['latest_breakout'] = {
+                'breakout_date': latest_breakout['breakout_date'].strftime('%Y-%m-%d'),
+                'breakout_price': latest_breakout['breakout_price'],
+                'volume_ratio': latest_breakout['volume_ratio'],
+                'quality_score': latest_breakout['quality_score'],
+                'too_fast_surge': surge_check,
+            }
         
         return report
 
@@ -624,15 +923,15 @@ if __name__ == '__main__':
     from indicators import calculate_all_basic_indicators
     from stage_detector import StageDetector
     
-    print("ベース検出（リファクタリング版）のテストを開始...")
-    print("StageDetectorとの連携機能をテスト\n")
+    print("ベース検出（完全版 - StageDetector連携）のテストを開始...")
+    print("="*80)
     
     test_tickers = ['AAPL', 'NVDA', 'TSLA']
     
     for ticker in test_tickers:
-        print(f"\n{'='*60}")
+        print(f"\n{'='*80}")
         print(f"{ticker} のベース分析（StageDetector連携）:")
-        print(f"{'='*60}")
+        print(f"{'='*80}")
         
         stock_df, _ = fetch_stock_data(ticker, period='2y')
         
@@ -640,51 +939,40 @@ if __name__ == '__main__':
             indicators_df = calculate_all_basic_indicators(stock_df)
             indicators_df = indicators_df.dropna()
             
-            if len(indicators_df) >= 100:
+            if len(indicators_df) >= 200:
                 # BaseDetectorとStageDetectorを初期化
-                base_detector = BaseDetector(indicators_df, min_base_days=20)
+                base_detector = BaseDetector(indicators_df, min_base_days=35)
                 stage_detector = StageDetector(indicators_df)
                 
                 # StageDetectorと連携した包括的分析
                 report = base_detector.analyze_with_stage(stage_detector)
                 
-                print(f"現在のステージ: Stage {report['current_stage']} ({report['current_substage']})")
-                print(f"検出されたベース数: {report['total_bases_detected']}")
+                print(f"\n【Weinstein Stage Analysis】")
+                print(f"  Stage: {report['weinstein_stage']} ({report['weinstein_substage']})")
                 
-                # Stage 1の場合
-                if report['current_stage'] == 1:
-                    if report.get('latest_base'):
-                        base = report['latest_base']
-                        print(f"\n最新ベース:")
-                        print(f"  期間: {base['start_date'].strftime('%Y-%m-%d')} - {base['end_date'].strftime('%Y-%m-%d')}")
-                        print(f"  継続期間: {base['duration_weeks']:.1f}週")
-                        print(f"  深さ: {base['depth_pct']:.1f}%")
-                        print(f"  ピボットポイント: ${base['pivot_point']:.2f}")
-                        
-                        if 'quality_score' in base:
-                            print(f"  品質スコア: {base['quality_score']:.1f}/100")
-                            quality = base['quality_details']
-                            print(f"    期間: {quality['period_rating']} ({quality['period_score']}点)")
-                            print(f"    深さ: {quality['depth_rating']} ({quality['depth_score']}点)")
-                            print(f"    出来高: {quality['volume_rating']} ({quality['volume_score']}点)")
-                            print(f"    形状: {quality['shape_rating']} ({quality['shape_score']}点)")
-                    
-                    print(f"\nStage解釈: {report.get('stage_interpretation', 'N/A')}")
-                    print(f"推奨アクション: {report.get('stage_action', 'N/A')}")
-                    print(f"優先度: {report.get('priority', 'N/A')}")
+                print(f"\n【Base Counting (O'Neil/Minervini)】")
+                print(f"  Base Count: {report['base_count_stage']}")
+                print(f"  Category: {report['base_count_category']}")
+                print(f"  Risk Level: {report['base_count_risk_level']}")
                 
-                # Stage 2の場合
-                elif report['current_stage'] == 2:
-                    print(f"Stage 2内のベース数: {report.get('stage2_base_count', 0)}")
-                    print(f"Stage 2内のブレイクアウト数: {report.get('stage2_breakout_count', 0)}")
-                    
-                    if report.get('latest_breakout'):
-                        bo = report['latest_breakout']
-                        print(f"\n最新ブレイクアウト:")
-                        print(f"  日付: {bo['breakout_date'].strftime('%Y-%m-%d')}")
-                        print(f"  価格: ${bo['breakout_price']:.2f}")
-                        print(f"  出来高倍率: {bo['volume_ratio']:.2f}x")
-                        print(f"  品質スコア: {bo['quality_score']:.1f}/100")
-                    
-                    print(f"\nStage解釈: {report.get('stage_interpretation', 'N/A')}")
-                    print(f"推奨アクション: {report.get('stage_action', 'N/A')}")
+                print(f"\n【統計】")
+                print(f"  検出ベース数: {report['total_bases_detected']}")
+                print(f"  ブレイクアウト数: {report['total_breakouts_detected']}")
+                
+                # ベースシーケンス
+                if report['base_sequence']:
+                    print(f"\n【ベースシーケンス（20%ルール適用）】")
+                    for seq in report['base_sequence'][-3:]:  # 最新3つ
+                        print(f"  {seq['display_stage']} Base: "
+                              f"{seq['start_date'].strftime('%Y-%m-%d')} - "
+                              f"{seq['end_date'].strftime('%Y-%m-%d')}")
+                        if seq['reset_reason']:
+                            print(f"    理由: {seq['reset_reason']}")
+                
+                # 統合分析
+                integrated = report['integrated_analysis']
+                print(f"\n【統合判定】")
+                print(f"  優先度: {integrated['priority']}")
+                print(f"  アクション: {integrated['action']}")
+                print(f"  リスク評価: {integrated['risk_assessment']}")
+                print(f"  詳細: {integrated['detailed_interpretation']}")
