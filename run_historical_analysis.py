@@ -11,7 +11,7 @@ from stage_history_manager import StageHistoryManager
 def run_historical_simulation(ticker: str, period_to_analyze: int = 252, data_dir: str = "./stage_history", **kwargs):
     """
     指定されたティッカーの過去のステージ変遷をシミュレートします。
-
+    
     Args:
         ticker (str): 分析対象のティッカーシンボル。
         period_to_analyze (int): 分析対象とする直近の取引日数。
@@ -20,7 +20,7 @@ def run_historical_simulation(ticker: str, period_to_analyze: int = 252, data_di
     """
     print(f"--- {ticker} の履歴分析シミュレーションを開始 ---")
     print(f"パラメータ: {kwargs}")
-
+    
     # 既存の履歴ファイルを削除してクリーンな状態から開始
     history_file_path = Path(data_dir) / f"{ticker}_stage_history.json"
     if history_file_path.exists():
@@ -40,17 +40,17 @@ def run_historical_simulation(ticker: str, period_to_analyze: int = 252, data_di
     # 全期間の指標を計算
     stock_indicators_df = calculate_all_basic_indicators(stock_df).dropna()
     benchmark_indicators_df = calculate_all_basic_indicators(benchmark_df).dropna()
-
+    
     # 分析対象期間を特定
     if len(stock_indicators_df) < period_to_analyze:
         print("エラー: 指標計算後のデータが不足しているため、分析を実行できません。")
         return
-
+    
     analysis_period_df = stock_indicators_df.tail(period_to_analyze)
-
+    
     # StageHistoryManagerを初期化
     manager = StageHistoryManager(ticker, data_dir=data_dir, **kwargs)
-
+    
     # 1日ずつ進めながら分析を実行
     print(f"過去{period_to_analyze}日間の分析を1日ずつ実行します...")
     for i in tqdm(range(len(analysis_period_df)), desc=f"Analyzing {ticker}"):
@@ -65,21 +65,21 @@ def run_historical_simulation(ticker: str, period_to_analyze: int = 252, data_di
             manager.analyze_and_update(historical_stock_data, historical_benchmark_data)
         except Exception:
             continue
-
+            
     print("\n--- シミュレーション完了 ---")
     manager.print_summary()
 
 def main():
     """メインの実行関数：コマンドライン引数を解析して分析を実行"""
     parser = argparse.ArgumentParser(description="指定されたティッカーのステージ変遷履歴を分析します。")
-
+    
     parser.add_argument('ticker', type=str, help='分析対象のティッカーシンボル。')
     parser.add_argument('--breakout-window-days', type=int, default=10, help='ブレイクアウト条件の追跡期間（日数）。')
     parser.add_argument('--breakdown-window-days', type=int, default=10, help='ブレイクダウン条件の追跡期間（日数）。')
     parser.add_argument('--topping-days-below-ma', type=int, default=20, help='天井形成と判断するMA下回りの継続日数。')
     parser.add_argument('--basing-days-above-ma', type=int, default=20, help='底固めと判断するMA上回りでの維持日数。')
     parser.add_argument('--data-dir', type=str, default="./stage_history", help='履歴ファイルを保存するディレクトリ。')
-
+    
     args = parser.parse_args()
 
     manager_kwargs = {
