@@ -569,10 +569,18 @@ class StageHistoryManager:
             return 'unknown'
 
         recent = ma_series.dropna().tail(lookback)
-        slope = np.polyfit(np.arange(len(recent)), recent.values, 1)[0]
 
-        threshold = 0.008 * np.mean(recent.values)
-        if abs(slope) < threshold:
+        # stage_detector.pyと計算方法を統一するため正規化
+        y = recent.values
+        if np.linalg.norm(y) > 0:
+            y_norm = y / np.linalg.norm(y)
+        else:
+            y_norm = y # ゼロベクトル
+
+        slope = np.polyfit(np.arange(len(recent)), y_norm, 1)[0]
+
+        # stage_detector.pyと閾値を統一
+        if abs(slope) < 0.008:
             return 'flat'
         return 'rising' if slope > 0 else 'declining'
 
@@ -765,6 +773,12 @@ class StageHistoryManager:
         old_stage = self.history['current_stage']
         old_substage = self.history['current_substage']
 
+        # 安定化ロック：10日以内のステージ再転換を防止
+        if self.history['stage_transitions']:
+            last_transition_date = pd.Timestamp(self.history['stage_transitions'][-1]['date'])
+            if (date - last_transition_date).days < 10:
+                return
+
         if old_stage == new_stage and old_substage == new_substage:
             return  # 変化なし
 
@@ -821,7 +835,7 @@ class StageHistoryManager:
 
         if status.get('stage_transitions'):
             print(f"\n【Stage Transition History】")
-            for t in status['stage_transitions'][-5:]:
+            for t in status['stage_transitions']:
                 print(f"  - {t['date']}: Stage {t.get('from')} → {t['to']} ({t['reason']})")
 
         print(f"\n【Statistics】")
