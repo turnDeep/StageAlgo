@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 from curl_cffi.requests import Session
 
-def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "2y"):
+def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "5y", interval: str = "1d"):
     """
     yfinanceを使用して、指定されたティッカーとベンチマークの過去の株価データを取得します。
     ブロックを回避するためにcurl-cffiセッションを使用します。
@@ -10,7 +10,8 @@ def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "
     Args:
         ticker (str): 株式ティッカーシンボル (例: "AAPL")。
         benchmark_ticker (str, optional): ベンチマークのティッカーシンボル。デフォルトは "SPY"。
-        period (str, optional): データをダウンロードする期間 (例: "1y", "2y", "max")。デフォルトは "2y"。
+        period (str, optional): データをダウンロードする期間 (例: "1y", "2y", "max")。デフォルトは "5y"。
+        interval (str, optional): データ間隔 ("1d" for daily, "1wk" for weekly)。デフォルトは "1d"。
 
     Returns:
         tuple[pd.DataFrame | None, pd.DataFrame | None]: 2つのpandas DataFrameを含むタプル:
@@ -24,6 +25,7 @@ def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "
         data = yf.download(
             tickers=[ticker, benchmark_ticker],
             period=period,
+            interval=interval,
             session=session,
             progress=False
         )
@@ -50,13 +52,27 @@ def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "
 if __name__ == '__main__':
     # モジュールのテスト用
     test_ticker = 'AAPL'
-    print(f"テスト用に {test_ticker} のデータを取得中...")
-    stock_df, benchmark_df = fetch_stock_data(test_ticker)
 
-    if stock_df is not None and benchmark_df is not None:
-        print(f"\n{test_ticker} のデータ:")
-        print(stock_df.head())
-        print(f"\nSPY (ベンチマーク) のデータ:")
-        print(benchmark_df.head())
+    # 日足データのテスト
+    print(f"テスト用に {test_ticker} の日足データを取得中...")
+    stock_df_daily, benchmark_df_daily = fetch_stock_data(test_ticker, interval="1d")
+
+    if stock_df_daily is not None and benchmark_df_daily is not None:
+        print(f"\n{test_ticker} の日足データ:")
+        print(stock_df_daily.head())
+        print(f"\nSPY (ベンチマーク) の日足データ:")
+        print(benchmark_df_daily.head())
     else:
-        print(f"{test_ticker} のデータ取得に失敗しました。")
+        print(f"{test_ticker} の日足データ取得に失敗しました。")
+
+    # 週足データのテスト
+    print(f"\nテスト用に {test_ticker} の週足データを取得中...")
+    stock_df_weekly, benchmark_df_weekly = fetch_stock_data(test_ticker, interval="1wk")
+
+    if stock_df_weekly is not None and benchmark_df_weekly is not None:
+        print(f"\n{test_ticker} の週足データ:")
+        print(stock_df_weekly.head())
+        print(f"\nSPY (ベンチマーク) の週足データ:")
+        print(benchmark_df_weekly.head())
+    else:
+        print(f"{test_ticker} の週足データ取得に失敗しました。")

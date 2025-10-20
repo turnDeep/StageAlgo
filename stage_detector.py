@@ -28,21 +28,32 @@ class StageDetector:
     2. その後、Stage 1とStage 3（横ばい）を判定
     """
     
-    def __init__(self, df: pd.DataFrame, benchmark_df: pd.DataFrame = None):
+    def __init__(self, df: pd.DataFrame, benchmark_df: pd.DataFrame = None, interval: str = '1d'):
         """
         Args:
-            df: 指標計算済みのDataFrame（日足）
+            df: 指標計算済みのDataFrame
             benchmark_df: ベンチマークデータ（オプション）
+            interval (str): '1d' or '1wk'
         """
         self.df = df
         self.benchmark_df = benchmark_df
         self.latest = df.iloc[-1]
-        
-        # 主要な移動平均線（日足ベース）
-        self.ma_30w = 'SMA_150'  # 30週 ≈ 150日
-        self.ma_40w = 'SMA_200'  # 40週 ≈ 200日
-        self.ma_10w = 'SMA_50'   # 10週 ≈ 50日
-        
+        self.interval = interval
+
+        # --- 時間軸に応じたパラメータ設定 ---
+        if self.interval == '1wk':
+            self.ma_10w = 'SMA_10'
+            self.ma_30w = 'SMA_30'
+            self.ma_40w = 'SMA_40'
+            self.slope_lookback = 10
+            self.price_range_lookback = 26 # 半年
+        else: # 日足
+            self.ma_10w = 'SMA_50'
+            self.ma_30w = 'SMA_150'
+            self.ma_40w = 'SMA_200'
+            self.slope_lookback = 20
+            self.price_range_lookback = 126 # 半年
+
     def _check_ma_trend(self, ma_series: pd.Series, lookback: int = 20) -> str:
         """
         移動平均線のトレンドを判定
@@ -155,7 +166,7 @@ class StageDetector:
             tuple: (Stage 2判定, 詳細情報)
         """
         position = self._calculate_price_position()
-        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], 20)
+        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], self.slope_lookback)
         volume_chars = self._get_volume_characteristics()
         
         # RS Rating を取得
@@ -244,7 +255,7 @@ class StageDetector:
             tuple: (Stage 4判定, 詳細情報)
         """
         position = self._calculate_price_position()
-        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], 20)
+        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], self.slope_lookback)
         volume_chars = self._get_volume_characteristics()
 
         details = {
@@ -321,8 +332,8 @@ class StageDetector:
             tuple: (Stage 1判定, 詳細情報)
         """
         # 【重要ルール】長期MAが明確に下降中はステージ1と判定しない
-        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], 30)
-        ma_40w_trend = self._check_ma_trend(self.df[self.ma_40w], 40)
+        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], self.slope_lookback + 10)
+        ma_40w_trend = self._check_ma_trend(self.df[self.ma_40w], self.slope_lookback + 20)
         if ma_30w_trend == 'declining' or ma_40w_trend == 'declining':
             return False, "", {'reason': f'30w MA is {ma_30w_trend}, 40w MA is {ma_40w_trend}'}
 
@@ -350,7 +361,7 @@ class StageDetector:
             price_oscillating = False
         
         # 価格の横ばいチェック
-        price_range = self._calculate_recent_price_range(50)
+        price_range = self._calculate_recent_price_range(self.price_range_lookback)
         price_sideways = price_range < 0.25
         
         # 出来高の減少傾向（Dry up）
@@ -405,8 +416,8 @@ class StageDetector:
             tuple: (Stage 3判定, 詳細情報)
         """
         # 【重要ルール】長期MAが明確に上昇中はステージ3と判定しない
-        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], 30)
-        ma_40w_trend = self._check_ma_trend(self.df[self.ma_40w], 40) # より長期で確認
+        ma_30w_trend = self._check_ma_trend(self.df[self.ma_30w], self.slope_lookback + 10)
+        ma_40w_trend = self._check_ma_trend(self.df[self.ma_40w], self.slope_lookback + 20) # より長期で確認
         if ma_30w_trend == 'rising' or ma_40w_trend == 'rising':
             return False, "", {'reason': f'30w MA is {ma_30w_trend}, 40w MA is {ma_40w_trend}'}
 
@@ -434,7 +445,7 @@ class StageDetector:
             price_oscillating = False
         
         # 価格の横ばいチェック
-        price_range = self._calculate_recent_price_range(50)
+        price_range = self._calculate_recent_price_range(self.price_range_lookback)
         price_sideways = price_range < 0.25
         
         # 出来高の増加傾向（Churning - Stage 1の逆）
@@ -682,7 +693,7 @@ class StageDetector:
             )
 
             # 40週MAが下降中でもOK（早期検出）
-            ma_40w_trend = self._check_ma_trend(self.df[self.ma_40w], 20)
+            ma_40w_trend = self._check_ma_trend(self.df[self.ma_40w], self.slope_lookback)
             if ma_40w_trend == 'declining':
                 details['early_stage1_signal'] = True
                 details['reasons'].append(
@@ -837,10 +848,12 @@ class StageDetector:
         # 現在のステージを確認
         current_stage = self.determine_stage()
         
+        # Minerviniテンプレートは日足でのみ適用
+        if self.interval != '1d':
+            return {'applicable': False, 'reason': 'Minerviniテンプレートは日足データでのみ適用されます。'}
+
         # Stage 2またはStage 1で適用(簡易化)
-        if current_stage == 2 or current_stage == 1:
-            applicable = True
-        else:
+        if current_stage not in [1, 2]:
             return {
                 'applicable': False,
                 'reason': f'Minerviniテンプレートは Stage 2 または Stage 1 で適用（現在: Stage {current_stage}）',
@@ -851,10 +864,13 @@ class StageDetector:
         
         # 現在の価格とMA
         current_price = self.latest['Close']
-        sma_50 = self.latest['SMA_50']
-        sma_150 = self.latest['SMA_150']
-        sma_200 = self.latest['SMA_200']
-        
+        sma_50 = self.latest.get('SMA_50')
+        sma_150 = self.latest.get('SMA_150')
+        sma_200 = self.latest.get('SMA_200')
+
+        if any(v is None for v in [sma_50, sma_150, sma_200]):
+             return {'applicable': False, 'reason': '必要なSMAデータが不足しています。'}
+
         # 基準1: 現在価格 > 150日MA and 200日MA
         checks['criterion_1'] = {
             'passed': (current_price > sma_150) and (current_price > sma_200),
@@ -1005,35 +1021,26 @@ if __name__ == '__main__':
         print(f"{ticker} のステージ分析:")
         print(f"{'='*60}")
         
-        stock_df, benchmark_df = fetch_stock_data(ticker, period='2y')
-        
-        if stock_df is not None:
-            indicators_df = calculate_all_basic_indicators(stock_df)
-            indicators_df = indicators_df.dropna()
-            
-            if len(indicators_df) >= 200:
-                detector = StageDetector(indicators_df, benchmark_df)
-                stage = detector.determine_stage()
-                
-                print(f"ステージ: Stage {stage}")
-                
-                # Minerviniテンプレートチェック
-                template_result = detector.check_minervini_template()
+        # --- 日足分析 ---
+        stock_df_daily, benchmark_df_daily = fetch_stock_data(ticker, interval='1d')
+        if stock_df_daily is not None:
+            indicators_df_daily = calculate_all_basic_indicators(stock_df_daily, '1d').dropna()
+            if len(indicators_df_daily) >= 200:
+                detector_daily = StageDetector(indicators_df_daily, benchmark_df_daily, '1d')
+                stage_daily = detector_daily.determine_stage()
+                print(f"日足ステージ: Stage {stage_daily}")
+
+                template_result = detector_daily.check_minervini_template()
                 if template_result['applicable']:
-                    print(f"\nMinerviniテンプレート:")
-                    print(f"  基準充足: {template_result['criteria_met']}/{template_result['total_criteria']}")
-                    print(f"  スコア: {template_result['score']:.1f}/100")
+                    print(f"Minerviniテンプレート: {template_result['score']:.1f}/100")
                 else:
-                    print(f"\nMinerviniテンプレート: {template_result['reason']}")
-                
-                # 価格情報
-                current_price = detector.latest['Close']
-                ma_50 = detector.latest['SMA_50']
-                ma_150 = detector.latest['SMA_150']
-                ma_200 = detector.latest['SMA_200']
-                
-                print(f"\n価格情報:")
-                print(f"  現在価格: ${current_price:.2f}")
-                print(f"  50日MA: ${ma_50:.2f} ({'+' if current_price > ma_50 else '-'})")
-                print(f"  150日MA: ${ma_150:.2f} ({'+' if current_price > ma_150 else '-'})")
-                print(f"  200日MA: ${ma_200:.2f} ({'+' if current_price > ma_200 else '-'})")
+                    print(f"Minerviniテンプレート: {template_result['reason']}")
+
+        # --- 週足分析 ---
+        stock_df_weekly, benchmark_df_weekly = fetch_stock_data(ticker, interval='1wk')
+        if stock_df_weekly is not None:
+            indicators_df_weekly = calculate_all_basic_indicators(stock_df_weekly, '1wk').dropna()
+            if len(indicators_df_weekly) >= 40:
+                detector_weekly = StageDetector(indicators_df_weekly, benchmark_df_weekly, '1wk')
+                stage_weekly = detector_weekly.determine_stage()
+                print(f"週足ステージ: Stage {stage_weekly}")
