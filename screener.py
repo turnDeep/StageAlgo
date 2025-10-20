@@ -84,7 +84,7 @@ def analyze_ticker_for_stage2(args):
         minervini_detector = MinerviniTemplateDetector(indicator_df)
         minervini_results = minervini_detector.check_template()
         minervini_criteria_met = minervini_results.get('criteria_met', 0)
-
+        
         result = {
             'Ticker': ticker,
             'Exchange': exchange,
@@ -176,13 +176,10 @@ def main():
     print("=" * 70)
     print()
 
-    # stock.csvを読み込み、サンプリング
+    # stock.csvを読み込み
     try:
         stock_list_df = pd.read_csv('stock.csv', encoding='utf-8-sig')
         stock_list_df.dropna(subset=['Ticker'], inplace=True)
-        # 検証用に100銘柄をランダムにサンプリング
-        if len(stock_list_df) > 100:
-            stock_list_df = stock_list_df.sample(n=100, random_state=42)
         tickers = [(row['Ticker'], row['Exchange']) for index, row in stock_list_df.iterrows()]
     except FileNotFoundError:
         print("エラー: stock.csvが見つかりません。")
@@ -192,7 +189,7 @@ def main():
         print(f"エラー: stock.csvの読み込み中にエラーが発生しました: {e}")
         return
 
-    print(f"✓ {len(tickers)}銘柄を読み込みました（サンプリング済み）")
+    print(f"✓ {len(tickers)}銘柄を読み込みました")
     print()
 
     # ベンチマークデータ（SPY）を取得
@@ -257,10 +254,10 @@ def main():
     if not results_df.empty and 'Stage2_Transition_Date_dt' in results_df.columns:
         # 最新の移行日を取得
         most_recent_transition_date = results_df['Stage2_Transition_Date_dt'].max()
-
+        
         # 最新の移行日に移行した銘柄のみを抽出
         recent_transition_df = results_df[results_df['Stage2_Transition_Date_dt'] == most_recent_transition_date]
-
+        
         if not recent_transition_df.empty:
             tradingview_list = [
                 f"{row['Exchange']}:{row['Ticker']}"
@@ -292,7 +289,7 @@ def main():
         known_transition.loc[:, 'Price_Change_%'] = known_transition['Price_Change_%'].fillna(0)
         avg_days = known_transition['Days_Since_Transition'].mean()
         avg_price_change = known_transition['Price_Change_%'].mean()
-
+        
         print(f"ステージ2移行日が判明: {len(known_transition)}銘柄")
         print(f"平均経過日数: {avg_days:.0f}日")
         print(f"移行日からの平均株価変動率: {avg_price_change:.2f}%")
