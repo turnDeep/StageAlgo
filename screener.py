@@ -72,6 +72,7 @@ def analyze_ticker_for_stage2(args):
         current_price = latest['Close']
         transition_close = None
         price_change_pct = None
+        minervini_criteria_met = 0  # デフォルト値
 
         if stage2_transition_date:
             transition_date_str = stage2_transition_date.strftime('%Y-%m-%d')
@@ -79,12 +80,14 @@ def analyze_ticker_for_stage2(args):
                 transition_close = indicator_df.loc[transition_date_str]['Close']
                 if transition_close > 0:
                     price_change_pct = ((current_price - transition_close) / transition_close) * 100
+                
+                # 移行日時点のデータでMinerviniテンプレートをチェック
+                historical_df = indicator_df.loc[:transition_date_str]
+                if len(historical_df) >= 200:  # 指標計算に十分なデータがあるか確認
+                    minervini_detector = MinerviniTemplateDetector(historical_df)
+                    minervini_results = minervini_detector.check_template()
+                    minervini_criteria_met = minervini_results.get('criteria_met', 0)
 
-        # Minerviniテンプレートの指標数をカウント
-        minervini_detector = MinerviniTemplateDetector(indicator_df)
-        minervini_results = minervini_detector.check_template()
-        minervini_criteria_met = minervini_results.get('criteria_met', 0)
-        
         result = {
             'Ticker': ticker,
             'Exchange': exchange,
