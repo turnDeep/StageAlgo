@@ -176,13 +176,10 @@ def main():
     print("=" * 70)
     print()
 
-    # stock.csvを読み込み、サンプリング
+    # stock.csvを読み込み
     try:
         stock_list_df = pd.read_csv('stock.csv', encoding='utf-8-sig')
         stock_list_df.dropna(subset=['Ticker'], inplace=True)
-        # 検証用に100銘柄をランダムにサンプリング
-        if len(stock_list_df) > 100:
-            stock_list_df = stock_list_df.sample(n=100, random_state=42)
         tickers = [(row['Ticker'], row['Exchange']) for index, row in stock_list_df.iterrows()]
     except FileNotFoundError:
         print("エラー: stock.csvが見つかりません。")
@@ -192,7 +189,7 @@ def main():
         print(f"エラー: stock.csvの読み込み中にエラーが発生しました: {e}")
         return
 
-    print(f"✓ {len(tickers)}銘柄を読み込みました（サンプリング済み）")
+    print(f"✓ {len(tickers)}銘柄を読み込みました")
     print()
 
     # ベンチマークデータ（SPY）を取得
