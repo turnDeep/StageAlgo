@@ -69,22 +69,25 @@ class StageHistoryManager:
         with open(self.history_file, 'w') as f:
             json.dump(self.history, f, indent=2, default=str)
     
-    def analyze_and_update(self, df: pd.DataFrame, benchmark_df: pd.DataFrame):
+    def analyze_and_update(self, daily_df: pd.DataFrame, benchmark_daily_df: pd.DataFrame, weekly_df: pd.DataFrame):
         """
-        データを分析してステージを更新（早期検出対応版）
+        日足と週足データを用いてステージを分析・更新
         """
-        latest_date = df.index[-1]
+        latest_date = daily_df.index[-1]
 
-        # 1. StageDetectorで現在のステージを判定
-        detector = StageDetector(df, benchmark_df)
-        rs_rating = df.iloc[-1].get('RS_Rating')
+        # --- 1. 週足ステージを判定 (長期トレンドフィルター) ---
+        weekly_detector = StageDetector(weekly_df, interval='1wk')
+        weekly_stage = weekly_detector.determine_stage()
+
+        # --- 2. 日足ステージを判定 ---
+        daily_detector = StageDetector(daily_df, benchmark_daily_df, interval='1d')
+        rs_rating = daily_df.iloc[-1].get('RS_Rating')
         previous_stage = self.history.get('current_stage')
 
-        # **【追加】早期シグナルの記録**
+        # 早期シグナル検出
         early_signals = {}
-
         if previous_stage == 2:
-            early_stage3, stage3_details = detector._detect_early_stage3_signals()
+            early_stage3, stage3_details = daily_detector._detect_early_stage3_signals()
             if early_stage3:
                 early_signals['stage3_early_signal'] = {
                     'detected': True,
@@ -92,9 +95,8 @@ class StageHistoryManager:
                     'reasons': stage3_details.get('reasons', []),
                     'confidence': stage3_details.get('confidence', 'unknown')
                 }
-
         if previous_stage == 4:
-            early_stage1, stage1_details = detector._detect_early_stage1_signals()
+            early_stage1, stage1_details = daily_detector._detect_early_stage1_signals()
             if early_stage1:
                 early_signals['stage1_early_signal'] = {
                     'detected': True,
@@ -103,41 +105,54 @@ class StageHistoryManager:
                     'confidence': stage1_details.get('confidence', 'unknown')
                 }
 
-        detected_stage = detector.determine_stage(
+        detected_stage_daily = daily_detector.determine_stage(
             rs_rating=rs_rating,
             previous_stage=previous_stage
         )
 
-        # 2. 初回実行時の初期化
+        # --- 3. 週足フィルターを適用した最終ステージ判定 ---
+        final_stage = self._apply_weekly_filter(detected_stage_daily, weekly_stage, previous_stage)
+
+        # --- 4. 履歴の更新 ---
+        # 初回実行時
         if self.history['current_stage'] is None:
-            self._initialize_stage(latest_date, detected_stage)
+            self._initialize_stage(latest_date, final_stage)
             if early_signals:
                 self.history['early_signals'] = early_signals
             self._save_history()
             return
 
-        # 3. ステージに変化があったか確認
-        previous_stage = self.history['current_stage']
-        if detected_stage != previous_stage:
-            # **【追加】早期シグナル情報を含める**
-            reason = f"Detected change from Stage {previous_stage} to {detected_stage}"
+        # ステージに変化があったか確認
+        if final_stage != previous_stage:
+            reason = f"週足 Stage {weekly_stage} のフィルター適用後、Stage {previous_stage} → {final_stage} へ移行"
             if early_signals:
-                reason += f" (Early signals: {', '.join(early_signals.keys())})"
+                reason += f" (早期シグナル: {', '.join(early_signals.keys())})"
 
-            self._execute_stage_transition(latest_date, detected_stage, reason, early_signals)
-
-        # **【追加】早期シグナルを履歴に記録**
-        if early_signals:
-            if 'early_signals_history' not in self.history:
-                self.history['early_signals_history'] = []
-
-            self.history['early_signals_history'].append({
-                'date': latest_date.isoformat(),
-                'current_stage': previous_stage,
-                'signals': early_signals
-            })
+            self._execute_stage_transition(latest_date, final_stage, reason, early_signals)
 
         self._save_history()
+
+    def _apply_weekly_filter(self, daily_stage: int, weekly_stage: int, previous_stage: Optional[int]) -> int:
+        """
+        週足ステージをフィルターとして使い、最終的なステージを決定する。
+        """
+        # ルール1: 週足が下降トレンド(S4)の場合、日足がS2になってもS1(底固め)として扱う
+        if weekly_stage == 4 and daily_stage == 2:
+            return 1  # 上昇のダマシと判断
+
+        # ルール2: 週足が上昇トレンド(S2)の場合、日足がS4になってもS3(天井圏)として扱う
+        if weekly_stage == 2 and daily_stage == 4:
+            return 3  # 下降のダマシと判断
+
+        # ルール3: 週足がS1またはS2でない限り、日足のS2移行は認めない
+        if daily_stage == 2 and weekly_stage not in [1, 2]:
+            if previous_stage:
+                return previous_stage # ステージ移行を保留
+            else:
+                return 1 # 初期状態ならS1
+
+        # 上記ルールに当てはまらない場合は、日足の判定を優先
+        return daily_stage
 
     def _initialize_stage(self, date: pd.Timestamp, stage: int):
         """初期ステージを設定"""

@@ -92,58 +92,73 @@ def calculate_ma_slope(series: pd.Series, period: int = 20) -> pd.Series:
     return series.rolling(window=period, min_periods=period).apply(slope_calc, raw=False)
 
 
-def calculate_all_basic_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_all_basic_indicators(df: pd.DataFrame, interval: str = '1d') -> pd.DataFrame:
     """
-    全ての基礎指標を一括計算
+    全ての基礎指標を一括計算（日足・週足対応）
     
-    フェーズ1: 基礎データ計算に対応
-    - 移動平均線 (50日/150日/200日SMA, 21日/8日EMA)
-    - 価格レベル (52週高値/安値、距離)
-    - ATR関連
-    - 出来高関連
+    Args:
+        df (pd.DataFrame): 株価データ
+        interval (str): '1d' or '1wk'
+
+    Returns:
+        pd.DataFrame: 指標が追加されたDataFrame
     """
     result_df = df.copy()
-    
+
+    # --- 時間軸に応じたパラメータ設定 ---
+    if interval == '1wk':
+        # 週足用の期間
+        ma_short, ma_mid, ma_long = 10, 30, 40
+        slope_period = 10  # 10週
+        atr_period = 10  # 10週
+        vol_sma_period = 40  # 40週
+        high_low_window = 52  # 52週
+        ema_short, ema_long = 5, 13 # 週足用のEMA期間
+    else:
+        # 日足用の期間
+        ma_short, ma_mid, ma_long = 50, 150, 200
+        slope_period = 20  # 20日
+        atr_period = 14  # 14日
+        vol_sma_period = 50  # 50日
+        high_low_window = 252  # 52週 ≈ 252日
+        ema_short, ema_long = 8, 21
+
     # 1. 移動平均線
-    result_df['SMA_50'] = calculate_sma(df, 'Close', 50)
-    result_df['SMA_150'] = calculate_sma(df, 'Close', 150)
-    result_df['SMA_200'] = calculate_sma(df, 'Close', 200)
-    result_df['EMA_21'] = calculate_ema(df, 'Close', 21)
-    result_df['EMA_8'] = calculate_ema(df, 'Close', 8)
-    
-    # 週足相当の移動平均（参考用）
-    result_df['SMA_10W'] = calculate_sma(df, 'Close', 50)  # 10週 ≈ 50日
-    result_df['SMA_30W'] = calculate_sma(df, 'Close', 150)  # 30週 ≈ 150日
-    result_df['SMA_40W'] = calculate_sma(df, 'Close', 200)  # 40週 ≈ 200日
-    
-    # 2. 移動平均の傾き (20日基準)
-    result_df['SMA_50_Slope'] = calculate_ma_slope(result_df['SMA_50'], 20)
-    result_df['SMA_150_Slope'] = calculate_ma_slope(result_df['SMA_150'], 20)
-    result_df['SMA_200_Slope'] = calculate_ma_slope(result_df['SMA_200'], 20)
-    
+    result_df[f'SMA_{ma_short}'] = calculate_sma(df, 'Close', ma_short)
+    result_df[f'SMA_{ma_mid}'] = calculate_sma(df, 'Close', ma_mid)
+    result_df[f'SMA_{ma_long}'] = calculate_sma(df, 'Close', ma_long)
+    result_df[f'EMA_{ema_long}'] = calculate_ema(df, 'Close', ema_long)
+    result_df[f'EMA_{ema_short}'] = calculate_ema(df, 'Close', ema_short)
+
+    # 2. 移動平均の傾き
+    result_df[f'SMA_{ma_short}_Slope'] = calculate_ma_slope(result_df[f'SMA_{ma_short}'], slope_period)
+    result_df[f'SMA_{ma_mid}_Slope'] = calculate_ma_slope(result_df[f'SMA_{ma_mid}'], slope_period)
+    result_df[f'SMA_{ma_long}_Slope'] = calculate_ma_slope(result_df[f'SMA_{ma_long}'], slope_period)
+
     # 3. 52週高値・安値
-    high_52w, low_52w, dist_high, dist_low = calculate_52week_metrics(df)
+    high_52w = df['High'].rolling(window=high_low_window, min_periods=high_low_window // 2).max()
+    low_52w = df['Low'].rolling(window=high_low_window, min_periods=high_low_window // 2).min()
     result_df['High_52W'] = high_52w
     result_df['Low_52W'] = low_52w
-    result_df['Dist_From_52W_High_Pct'] = dist_high
-    result_df['Dist_From_52W_Low_Pct'] = dist_low
-    
+    result_df['Dist_From_52W_High_Pct'] = ((df['Close'] - high_52w) / high_52w * 100)
+    result_df['Dist_From_52W_Low_Pct'] = ((df['Close'] - low_52w) / low_52w * 100)
+
     # 4. 現在価格と各MAの乖離率
-    result_df['Deviation_From_SMA50_Pct'] = ((df['Close'] - result_df['SMA_50']) / result_df['SMA_50'] * 100)
-    result_df['Deviation_From_SMA150_Pct'] = ((df['Close'] - result_df['SMA_150']) / result_df['SMA_150'] * 100)
-    result_df['Deviation_From_SMA200_Pct'] = ((df['Close'] - result_df['SMA_200']) / result_df['SMA_200'] * 100)
-    
+    result_df[f'Deviation_From_SMA{ma_short}_Pct'] = ((df['Close'] - result_df[f'SMA_{ma_short}']) / result_df[f'SMA_{ma_short}'] * 100)
+    result_df[f'Deviation_From_SMA{ma_mid}_Pct'] = ((df['Close'] - result_df[f'SMA_{ma_mid}']) / result_df[f'SMA_{ma_mid}'] * 100)
+    result_df[f'Deviation_From_SMA{ma_long}_Pct'] = ((df['Close'] - result_df[f'SMA_{ma_long}']) / result_df[f'SMA_{ma_long}'] * 100)
+
     # 5. ATR関連
-    result_df['ATR_14'] = calculate_atr(df, 14)
-    result_df['ATR_Pct'] = (result_df['ATR_14'] / df['Close'] * 100)
-    
+    result_df[f'ATR_{atr_period}'] = calculate_atr(df, atr_period)
+    result_df['ATR_Pct'] = (result_df[f'ATR_{atr_period}'] / df['Close'] * 100)
+
     # 6. 出来高関連
-    result_df['Volume_SMA_50'] = calculate_sma(df, 'Volume', 50)
-    result_df['Relative_Volume'] = df['Volume'] / result_df['Volume_SMA_50']
-    
+    result_df[f'Volume_SMA_{vol_sma_period}'] = calculate_sma(df, 'Volume', vol_sma_period)
+    result_df['Relative_Volume'] = df['Volume'] / result_df[f'Volume_SMA_{vol_sma_period}']
+
     # 7. OBV
     result_df['OBV'] = calculate_obv(df)
-    
+
     return result_df
 
 
@@ -151,14 +166,22 @@ if __name__ == '__main__':
     # テスト用
     from data_fetcher import fetch_stock_data
     
-    print("指標計算のテストを開始...")
-    stock_df, _ = fetch_stock_data('AAPL', period='2y')
+    print("--- 日足データの指標計算テスト ---")
+    stock_df_daily, _ = fetch_stock_data('AAPL', interval='1d')
     
-    if stock_df is not None:
-        indicators_df = calculate_all_basic_indicators(stock_df)
-        print("\n計算された指標 (最新5日):")
+    if stock_df_daily is not None:
+        indicators_df_daily = calculate_all_basic_indicators(stock_df_daily, interval='1d')
+        print("\n計算された日足指標 (最新5日):")
         cols_to_show = ['Close', 'SMA_50', 'SMA_150', 'SMA_200', 'ATR_14', 
                         'Relative_Volume', 'Dist_From_52W_High_Pct']
-        print(indicators_df[cols_to_show].tail())
-        print(f"\n総行数: {len(indicators_df)}")
-        print(f"NaN値を除外後: {indicators_df.dropna().shape[0]}")
+        print(indicators_df_daily[cols_to_show].tail())
+
+    print("\n--- 週足データの指標計算テスト ---")
+    stock_df_weekly, _ = fetch_stock_data('AAPL', interval='1wk')
+
+    if stock_df_weekly is not None:
+        indicators_df_weekly = calculate_all_basic_indicators(stock_df_weekly, interval='1wk')
+        print("\n計算された週足指標 (最新5週):")
+        cols_to_show = ['Close', 'SMA_10', 'SMA_30', 'SMA_40', 'ATR_10',
+                        'Relative_Volume', 'Dist_From_52W_High_Pct']
+        print(indicators_df_weekly[cols_to_show].tail())

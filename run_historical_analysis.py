@@ -56,23 +56,28 @@ def run_historical_simulation(ticker: str,
         os.remove(history_file_path)
         print(f"既存の履歴ファイル {history_file_path} を削除しました。")
 
-    # データ取得（3年分）
+    # --- データ取得 ---
+    # 日足と週足の両方のデータを取得
     try:
-        stock_df, benchmark_df = fetch_stock_data(ticker, period="3y")
-        if stock_df is None or benchmark_df is None or stock_df.empty or benchmark_df.empty:
-            print(f"エラー: {ticker} またはベンチマークのデータを取得できませんでした。")
+        stock_df_daily, benchmark_df_daily = fetch_stock_data(ticker, interval="1d")
+        stock_df_weekly, benchmark_df_weekly = fetch_stock_data(ticker, interval="1wk")
+
+        if stock_df_daily is None or stock_df_weekly is None:
+            print(f"エラー: {ticker} のデータ取得に失敗しました。")
             return
     except Exception as e:
         print(f"データ取得中にエラーが発生しました: {e}")
         return
 
-    # 指標計算（全期間）
-    stock_indicators_df = calculate_all_basic_indicators(stock_df).dropna()
-    benchmark_indicators_df = calculate_all_basic_indicators(benchmark_df).dropna()
+    # --- 指標計算 ---
+    # 日足と週足の指標をそれぞれ計算
+    stock_indicators_daily = calculate_all_basic_indicators(stock_df_daily, '1d').dropna()
+    benchmark_indicators_daily = calculate_all_basic_indicators(benchmark_df_daily, '1d').dropna()
+    stock_indicators_weekly = calculate_all_basic_indicators(stock_df_weekly, '1wk').dropna()
 
-    # RS Rating 計算
+    # RS Rating 計算 (日足ベース)
     print("RS Ratingを計算中...")
-    rs_calculator = RSCalculator(stock_indicators_df, benchmark_indicators_df)
+    rs_calculator = RSCalculator(stock_indicators_daily, benchmark_indicators_daily)
     rs_score_series = rs_calculator.calculate_ibd_rs_score()
 
     # 各時点でのパーセンタイルを計算
@@ -80,15 +85,15 @@ def run_historical_simulation(ticker: str,
         lambda x: pd.Series(x).rank(pct=True).iloc[-1] * 99, raw=False
     ).fillna(50)
 
-    stock_indicators_df['RS_Rating'] = rs_rating_series
+    stock_indicators_daily['RS_Rating'] = rs_rating_series
     print("✓ RS Rating 計算完了")
     
     # 分析対象期間を特定
-    if len(stock_indicators_df) < period_to_analyze:
+    if len(stock_indicators_daily) < period_to_analyze:
         print("エラー: 指標計算後のデータが不足しているため、分析を実行できません。")
         return
     
-    analysis_period_df = stock_indicators_df.tail(period_to_analyze)
+    analysis_period_df = stock_indicators_daily.tail(period_to_analyze)
     
     # StageHistoryManagerを初期化
     manager = StageHistoryManager(ticker, data_dir=data_dir)
@@ -98,26 +103,28 @@ def run_historical_simulation(ticker: str,
     for i in tqdm(range(len(analysis_period_df)), desc=f"Analyzing {ticker}"):
         current_date = analysis_period_df.index[i]
 
-        # その時点までの履歴データ
-        historical_stock_data = stock_indicators_df.loc[:current_date]
-        historical_benchmark_data = benchmark_indicators_df.reindex(
-            historical_stock_data.index,
-            method='ffill'
+        # --- その時点までの履歴データを準備 ---
+        historical_daily_data = stock_indicators_daily.loc[:current_date]
+        historical_benchmark_daily = benchmark_indicators_daily.reindex(
+            historical_daily_data.index, method='ffill'
         )
 
-        # 最低限のデータ数を確認
-        if len(historical_stock_data) < 200:
+        # 現在の日付に対応する週足データを特定 (未来のデータを含めないように)
+        historical_weekly_data = stock_indicators_weekly[stock_indicators_weekly.index <= current_date]
+
+        # --- 最低限のデータ数を確認 ---
+        if len(historical_daily_data) < 200 or len(historical_weekly_data) < 40:
             continue
 
         try:
             # StageHistoryManagerで分析と更新
-            # （内部でStageDetectorを使用してステージ判定）
             manager.analyze_and_update(
-                historical_stock_data,
-                historical_benchmark_data
+                daily_df=historical_daily_data,
+                benchmark_daily_df=historical_benchmark_daily,
+                weekly_df=historical_weekly_data
             )
         except Exception as e:
-            # エラーが発生しても継続
+            # print(f"Warning: {current_date} の分析中にエラー: {e}")
             continue
 
     # シミュレーション完了
