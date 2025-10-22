@@ -3,20 +3,27 @@ from data_fetcher import fetch_stock_data
 from indicators import calculate_all_basic_indicators
 from stage_detector import StageDetector
 from base_minervini_analyzer import BaseMinerviniAnalyzer
-import random
+import os
 
-def run_base_analysis():
+def run_base_analysis(output_filename='base_analysis_results.csv'):
     """
-    株価データを取得し、ステージ2の銘柄に対してベース分析を実行し、結果をCSVに出力する。
+    株価データを取得し、ステージ2の銘柄に対してベース分析を実行し、結果をCSVとTradingViewリストに出力する。
+
+    Args:
+        output_filename (str, optional): 出力するCSVファイル名.
+                                        Defaults to 'base_analysis_results.csv'.
     """
     try:
-        # stock.csvから銘柄リストを読み込む
-        stock_list = pd.read_csv('stock.csv')
-        tickers = stock_list['Ticker'].dropna().unique().tolist()
+        # stock.csvから銘柄リストと取引所を読み込む
+        stock_list = pd.read_csv('stock.csv').dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
+        tickers_to_analyze = stock_list.to_dict('records')
 
         results = []
 
-        for ticker in tickers:
+        for stock_info in tickers_to_analyze:
+            ticker = stock_info['Ticker']
+            exchange = stock_info['Exchange']
+
             print(f"Analyzing {ticker}...")
             # 5年分のデータを取得
             df, _ = fetch_stock_data(ticker, period='5y')
@@ -64,6 +71,7 @@ def run_base_analysis():
 
                 results.append({
                     'Ticker': ticker,
+                    'Exchange': exchange,
                     'Stage': 2,
                     'Base Count': base_count,
                     'Resistance Price': f"{resistance_price:.2f}",
@@ -71,11 +79,25 @@ def run_base_analysis():
                     'Minervini Criteria Met': criteria_met,
                 })
 
-        # 結果をCSVファイルに出力
+        # 結果をCSVファイルとTradingViewリストに出力
         if results:
             results_df = pd.DataFrame(results)
-            results_df.to_csv('base_analysis_results.csv', index=False)
-            print("Base analysis complete. Results saved to base_analysis_results.csv")
+
+            # 1. CSVファイルに保存
+            results_df.to_csv(output_filename, index=False)
+            print(f"Base analysis complete. Results saved to {output_filename}")
+
+            # 2. TradingView用リストを生成して保存
+            tradingview_list = [f"{row['Exchange']}:{row['Ticker']}" for _, row in results_df.iterrows()]
+            tradingview_str = ",".join(tradingview_list)
+
+            txt_output_filename = os.path.splitext(output_filename)[0] + ".txt"
+            try:
+                with open(txt_output_filename, 'w', encoding='utf-8') as f:
+                    f.write(tradingview_str)
+                print(f"TradingView list saved to {txt_output_filename}")
+            except Exception as e:
+                print(f"Warning: Could not write TradingView file: {e}")
         else:
             print("No Stage 2 stocks with bases found.")
 

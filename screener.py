@@ -10,12 +10,15 @@ from multiprocessing import Pool, cpu_count
 import warnings
 import os
 import shutil
+from datetime import datetime
+import pytz
 
 from data_fetcher import fetch_stock_data
 from indicators import calculate_all_basic_indicators
 from stage_detector import StageDetector
 from rs_calculator import RSCalculator
 from minervini_template_detector import MinerviniTemplateDetector
+from run_base_analyzer import run_base_analysis
 
 warnings.filterwarnings('ignore')
 
@@ -175,9 +178,17 @@ def main():
     メイン処理
     """
     print("=" * 70)
-    print("Stage 2 Screener with Transition Date Detection")
+    print("Stage 2 Screener with Base Analysis")
     print("=" * 70)
     print()
+
+    # アメリカ東部時間で現在の日付を取得
+    tz = pytz.timezone('America/New_York')
+    date_str = datetime.now(tz).strftime('%Y%m%d')
+
+    # 出力ファイル名を生成
+    stage_output_filename = f"{date_str}-stage.csv"
+    base_analyzer_output_filename = f"{date_str}-base.csv"
 
     # stock.csvを読み込み
     try:
@@ -212,63 +223,36 @@ def main():
     print("銘柄分析を開始します...")
     print()
 
-    # マルチプロセスで並列処理
     with Pool(cpu_count()) as pool:
-        for result in tqdm(
-            pool.imap_unordered(analyze_ticker_for_stage2, tickers),
-            total=len(tickers),
-            desc="Analyzing"
-        ):
+        for result in tqdm(pool.imap_unordered(analyze_ticker_for_stage2, tickers), total=len(tickers), desc="Analyzing"):
             if result:
                 results.append(result)
 
     if not results:
-        print()
-        print("=" * 70)
+        print("\n" + "=" * 70)
         print("ステージ2の銘柄は見つかりませんでした。")
         print("=" * 70)
         return
 
-    # 結果をDataFrameに変換
     results_df = pd.DataFrame(results)
+    results_df['Stage2_Transition_Date_dt'] = pd.to_datetime(results_df['Stage2_Transition_Date'], errors='coerce')
+    results_df = results_df.sort_values('Stage2_Transition_Date_dt', ascending=False, na_position='last')
 
-    # ステージ2移行日でソート（最近移行した銘柄が上位）
-    results_df['Stage2_Transition_Date_dt'] = pd.to_datetime(
-        results_df['Stage2_Transition_Date'],
-        errors='coerce'
-    )
-    results_df = results_df.sort_values(
-        'Stage2_Transition_Date_dt',
-        ascending=False,
-        na_position='last'
-    )
-
-    # 一時列を削除
-    results_df = results_df.drop('Stage2_Transition_Date_dt', axis=1)
-
-    # CSVファイルに保存
-    output_filename = 'stage2_with_transition_dates.csv'
-    results_df.to_csv(output_filename, index=False, encoding='utf-8-sig')
-    print()
-    print(f"✓ {len(results_df)}銘柄をステージ2として検出しました")
-    print(f"✓ 結果を {output_filename} に保存しました")
+    # ステージ2のスクリーナー結果を保存
+    results_df_to_save = results_df.drop('Stage2_Transition_Date_dt', axis=1)
+    results_df_to_save.to_csv(stage_output_filename, index=False, encoding='utf-8-sig')
+    print(f"\n✓ {len(results_df)}銘柄をステージ2として検出しました")
+    print(f"✓ 結果を {stage_output_filename} に保存しました")
 
     # TradingView用のテキストファイルを作成（直近でステージ2になったもののみ）
-    if not results_df.empty and 'Stage2_Transition_Date_dt' in results_df.columns:
-        # 最新の移行日を取得
+    if not results_df.empty:
         most_recent_transition_date = results_df['Stage2_Transition_Date_dt'].max()
-        
-        # 最新の移行日に移行した銘柄のみを抽出
         recent_transition_df = results_df[results_df['Stage2_Transition_Date_dt'] == most_recent_transition_date]
         
         if not recent_transition_df.empty:
-            tradingview_list = [
-                f"{row['Exchange']}:{row['Ticker']}"
-                for _, row in recent_transition_df.iterrows()
-            ]
+            tradingview_list = [f"{row['Exchange']}:{row['Ticker']}" for _, row in recent_transition_df.iterrows()]
             tradingview_str = ",".join(tradingview_list)
-
-            tv_filename = 'stage2_tradingview.txt'
+            tv_filename = f"{date_str}-stage.txt"
             try:
                 with open(tv_filename, 'w', encoding='utf-8') as f:
                     f.write(tradingview_str)
@@ -278,40 +262,37 @@ def main():
         else:
             print("✓ TradingView用リスト: 直近で移行した銘柄はありませんでした。")
 
-
     # サマリーを表示
-    print()
-    print("=" * 70)
+    print("\n" + "=" * 70)
     print("分析結果サマリー")
     print("=" * 70)
-    print()
-
-    # 移行日が判明している銘柄の統計
     known_transition = results_df[results_df['Stage2_Transition_Date'] != 'Unknown'].copy()
     if not known_transition.empty:
         known_transition.loc[:, 'Price_Change_%'] = known_transition['Price_Change_%'].fillna(0)
         avg_days = known_transition['Days_Since_Transition'].mean()
         avg_price_change = known_transition['Price_Change_%'].mean()
-        
         print(f"ステージ2移行日が判明: {len(known_transition)}銘柄")
         print(f"平均経過日数: {avg_days:.0f}日")
-        print(f"移行日からの平均株価変動率: {avg_price_change:.2f}%")
-        print()
+        print(f"移行日からの平均株価変動率: {avg_price_change:.2f}%\n")
 
-    # 最近移行した銘柄（Top 10）
     print("最近ステージ2に移行した銘柄（Top 10）:")
     print("-" * 70)
-
-    display_cols = [
-        'Ticker', 'Exchange', 'Stage2_Transition_Date', 'Days_Since_Transition',
-        'Current_Price', 'Transition_Close', 'Price_Change_%', 'RS_Rating',
-        'Minervini_Indicators_Met'
-    ]
-    # DataFrameに列が存在するか確認
+    display_cols = ['Ticker', 'Exchange', 'Stage2_Transition_Date', 'Days_Since_Transition', 'Current_Price', 'Transition_Close', 'Price_Change_%', 'RS_Rating', 'Minervini_Indicators_Met']
     display_cols = [col for col in display_cols if col in results_df.columns]
-
     print(results_df[display_cols].head(10).to_string(index=False))
     print()
+
+    # --- Base Analyzerの実行 ---
+    print("\n" + "=" * 70)
+    print("追加分析: Base Analyzerを実行します...")
+    print("=" * 70)
+    try:
+        run_base_analysis(output_filename=base_analyzer_output_filename)
+    except Exception as e:
+        print(f"エラー: Base Analyzerの実行中にエラーが発生しました: {e}")
+
+    print("\n" + "=" * 70)
+    print("すべての分析が完了しました。")
     print("=" * 70)
 
 

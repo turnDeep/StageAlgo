@@ -136,3 +136,5 @@ stage_history_*/
 # Screener output files
 stage*.csv
 *tradingview.txt
+*-screener_results.csv
+*-base.csv
