@@ -69,6 +69,9 @@ def run_base_analysis(output_filename='base_analysis_results.csv'):
                 # ベースカウンティング
                 base_count = len(base_start_events)
 
+                # 最終状態に基づいてステータスを設定
+                status = '上昇中' if base_analyzer.state == 'WAITING_FOR_SEPARATION' else '-'
+
                 results.append({
                     'Ticker': ticker,
                     'Exchange': exchange,
@@ -77,6 +80,7 @@ def run_base_analysis(output_filename='base_analysis_results.csv'):
                     'Resistance Price': f"{resistance_price:.2f}",
                     'Days Since Resistance': days_since_resistance,
                     'Minervini Criteria Met': criteria_met,
+                    'Status': status,
                 })
 
         # 結果をCSVファイルとTradingViewリストに出力

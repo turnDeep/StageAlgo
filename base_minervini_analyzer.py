@@ -9,6 +9,7 @@ class BaseMinerviniAnalyzer:
         self.json_events = []
         self.state = "SCANNING"
         self.base_anchor = {}
+        self.breakout_price = 0  # ブレイクアウト価格を保持
         self.ma_short = 50
         self.ma_mid = 150
         self.ma_long = 200
@@ -95,7 +96,8 @@ class BaseMinerviniAnalyzer:
                                 "drawdown_pct": f"{drawdown:.2%}",
                                 "volume_ratio": f"{volume_ratio:.2f}x"
                             })
-                            self.state = "SCANNING"
+                            self.state = "WAITING_FOR_SEPARATION"
+                            self.breakout_price = resistance_price
                         else:
                             self.json_events.append({
                                 "date": date.strftime('%Y-%m-%d'), "event": "WEAK_BREAKOUT",
@@ -111,4 +113,22 @@ class BaseMinerviniAnalyzer:
                             "base_start": self.base_anchor["start_date"].strftime('%Y-%m-%d')
                         })
                         self.state = "SCANNING"
+
+            elif self.state == "WAITING_FOR_SEPARATION":
+                # 20%の上昇（分離）を待つ
+                if row['High'] >= self.breakout_price * 1.20:
+                    self.json_events.append({
+                        "date": date.strftime('%Y-%m-%d'), "event": "SEPARATION_ACHIEVED",
+                        "breakout_price": self.breakout_price,
+                        "separation_price": row['High']
+                    })
+                    self.state = "SCANNING"  # 次のベースを探し始める
+                # 200日線を下回ったらリセット
+                elif row['Close'] < row[f'SMA_{self.ma_long}']:
+                    self.json_events.append({
+                        "date": date.strftime('%Y-%m-%d'), "event": "SEPARATION_FAILED",
+                        "reason": "Broke MA200 before 20% gain",
+                        "breakout_price": self.breakout_price
+                    })
+                    self.state = "SCANNING"
         return self.json_events
