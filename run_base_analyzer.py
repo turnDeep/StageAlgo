@@ -14,10 +14,6 @@ def run_base_analysis():
         stock_list = pd.read_csv('stock.csv')
         tickers = stock_list['Ticker'].dropna().unique().tolist()
 
-        # 検証用に100銘柄をランダムに選択
-        if len(tickers) > 100:
-            tickers = random.sample(tickers, 100)
-
         results = []
 
         for ticker in tickers:
