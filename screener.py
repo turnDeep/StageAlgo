@@ -287,7 +287,11 @@ def main():
     print("追加分析: Base Analyzerを実行します...")
     print("=" * 70)
     try:
-        run_base_analysis(output_filename=base_analyzer_output_filename)
+        # ステージ2の分析結果をインプットとして渡すことで、処理を効率化
+        run_base_analysis(
+            output_filename=base_analyzer_output_filename,
+            input_filename=stage_output_filename
+        )
     except Exception as e:
         print(f"エラー: Base Analyzerの実行中にエラーが発生しました: {e}")
 

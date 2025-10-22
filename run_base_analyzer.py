@@ -5,20 +5,30 @@ from stage_detector import StageDetector
 from base_minervini_analyzer import BaseMinerviniAnalyzer
 import os
 
-def run_base_analysis(output_filename='base_analysis_results.csv'):
+def run_base_analysis(output_filename='base_analysis_results.csv', input_filename=None):
     """
     株価データを取得し、ステージ2の銘柄に対してベース分析を実行し、結果をCSVとTradingViewリストに出力する。
 
     Args:
         output_filename (str, optional): 出力するCSVファイル名.
                                         Defaults to 'base_analysis_results.csv'.
+        input_filename (str, optional): 分析対象の銘柄リストCSVファイル名.
+                                       指定されない場合は'stock.csv'を使用.
     """
     try:
-        # stock.csvから銘柄リストと取引所を読み込む
-        stock_list = pd.read_csv('stock.csv').dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
+        if input_filename:
+            # 指定されたファイルから銘柄リストを読み込む（既にステージ2と仮定）
+            stock_list = pd.read_csv(input_filename).dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
+            print(f"✓ {input_filename} から {len(stock_list)} 銘柄を読み込みました (ステージ2として扱います)")
+        else:
+            # デフォルトのstock.csvから全銘柄を読み込む
+            stock_list = pd.read_csv('stock.csv').dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
+            print(f"✓ stock.csv から {len(stock_list)} 銘柄を読み込みました")
+
         tickers_to_analyze = stock_list.to_dict('records')
+
     except FileNotFoundError:
-        print("Error: stock.csv not found.")
+        print(f"Error: {input_filename or 'stock.csv'} not found.")
         return # ファイルがなければ処理を終了
 
     results = []
@@ -38,15 +48,23 @@ def run_base_analysis(output_filename='base_analysis_results.csv'):
             # テクニカル指標を計算
             df = calculate_all_basic_indicators(df)
 
-            # ステージ検出
-            stage_detector = StageDetector(df)
-            stage = stage_detector.determine_stage()
+            # ステージ検出ロジックの分岐
+            is_stage2 = False
+            if input_filename:
+                # 入力ファイルが指定されている場合、常にステージ2とみなす
+                is_stage2 = True
+            else:
+                # デフォルトの場合、ステージを判定
+                stage_detector = StageDetector(df)
+                stage = stage_detector.determine_stage()
+                if stage == 2:
+                    is_stage2 = True
 
-            # 最新のステージが2の場合のみベース分析を実行
-            if stage == 2:
+            # ステージ2の場合のみベース分析を実行
+            if is_stage2:
                 print(f"{ticker} is in Stage 2. Running base analysis...")
-
-                # ミネルヴィニのトレンドテンプレートをチェック
+                # ステージ検出器のインスタンス化（Minerviniチェックのため）
+                stage_detector = StageDetector(df)
                 template_result = stage_detector.check_minervini_template()
                 criteria_met = template_result.get('criteria_met', 0)
 
