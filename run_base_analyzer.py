@@ -17,10 +17,13 @@ def run_base_analysis(output_filename='base_analysis_results.csv'):
         # stock.csvから銘柄リストと取引所を読み込む
         stock_list = pd.read_csv('stock.csv').dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
         tickers_to_analyze = stock_list.to_dict('records')
+    except FileNotFoundError:
+        print("Error: stock.csv not found.")
+        return # ファイルがなければ処理を終了
 
-        results = []
-
-        for stock_info in tickers_to_analyze:
+    results = []
+    for stock_info in tickers_to_analyze:
+        try:
             ticker = stock_info['Ticker']
             exchange = stock_info['Exchange']
 
@@ -29,7 +32,7 @@ def run_base_analysis(output_filename='base_analysis_results.csv'):
             df, _ = fetch_stock_data(ticker, period='5y')
 
             if df is None or len(df) < 252:
-                print(f"Could not fetch sufficient data for {ticker}")
+                # print(f"Could not fetch sufficient data for {ticker}")
                 continue
 
             # テクニカル指標を計算
@@ -72,6 +75,7 @@ def run_base_analysis(output_filename='base_analysis_results.csv'):
                 # 最終状態に基づいてステータスを設定
                 status = '上昇中' if base_analyzer.state == 'WAITING_FOR_SEPARATION' else '-'
 
+
                 results.append({
                     'Ticker': ticker,
                     'Exchange': exchange,
@@ -82,33 +86,32 @@ def run_base_analysis(output_filename='base_analysis_results.csv'):
                     'Minervini Criteria Met': criteria_met,
                     'Status': status,
                 })
+        except Exception as e:
+            # ループ内のエラーを捕捉し、コンソールに表示して処理を続行
+            print(f"An error occurred while processing {ticker}: {e}. Skipping.")
+            continue
 
-        # 結果をCSVファイルとTradingViewリストに出力
-        if results:
-            results_df = pd.DataFrame(results)
+    # 結果をCSVファイルとTradingViewリストに出力
+    if results:
+        results_df = pd.DataFrame(results)
 
-            # 1. CSVファイルに保存
-            results_df.to_csv(output_filename, index=False)
-            print(f"Base analysis complete. Results saved to {output_filename}")
+        # 1. CSVファイルに保存
+        results_df.to_csv(output_filename, index=False)
+        print(f"Base analysis complete. Results saved to {output_filename}")
 
-            # 2. TradingView用リストを生成して保存
-            tradingview_list = [f"{row['Exchange']}:{row['Ticker']}" for _, row in results_df.iterrows()]
-            tradingview_str = ",".join(tradingview_list)
+        # 2. TradingView用リストを生成して保存
+        tradingview_list = [f"{row['Exchange']}:{row['Ticker']}" for _, row in results_df.iterrows()]
+        tradingview_str = ",".join(tradingview_list)
 
-            txt_output_filename = os.path.splitext(output_filename)[0] + ".txt"
-            try:
-                with open(txt_output_filename, 'w', encoding='utf-8') as f:
-                    f.write(tradingview_str)
-                print(f"TradingView list saved to {txt_output_filename}")
-            except Exception as e:
-                print(f"Warning: Could not write TradingView file: {e}")
-        else:
-            print("No Stage 2 stocks with bases found.")
-
-    except FileNotFoundError:
-        print("Error: stock.csv not found.")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        txt_output_filename = os.path.splitext(output_filename)[0] + ".txt"
+        try:
+            with open(txt_output_filename, 'w', encoding='utf-8') as f:
+                f.write(tradingview_str)
+            print(f"TradingView list saved to {txt_output_filename}")
+        except Exception as e:
+            print(f"Warning: Could not write TradingView file: {e}")
+    else:
+        print("No Stage 2 stocks with bases found.")
 
 if __name__ == "__main__":
     run_base_analysis()

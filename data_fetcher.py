@@ -30,6 +30,10 @@ def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "
             progress=False
         )
 
+        # yfinanceが予期せぬ形式（MultiIndexでないDataFrameなど）を返す場合があるため、ここで検証
+        if not isinstance(data.columns, pd.MultiIndex):
+            return None, None
+
         if data.empty or ticker not in data.columns.get_level_values(1):
             return None, None
 
