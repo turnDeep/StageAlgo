@@ -229,3 +229,23 @@ class StageHistoryManager:
             if "stage" in key:
                 print(f"  {key.replace('_', ' ').replace('stage', 'Stage ')}: {value}")
         print(f"  Other: {stats['other_transitions']}")
+
+    def load_from_json(self, ticker: str):
+        """指定されたティッカーのJSONファイルを読み込む"""
+        json_file_path = self.data_dir / f"{ticker}_stage_history.json"
+        if json_file_path.exists():
+            with open(json_file_path, 'r') as f:
+                self.history = json.load(f)
+        else:
+            self.history = self._initialize_history()
+            self.history['ticker'] = ticker
+
+    def get_history_as_df(self) -> pd.DataFrame:
+        """ステージ移行履歴をDataFrameとして取得"""
+        transitions = self.history.get('stage_transitions', [])
+        if not transitions:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(transitions)
+        df['ticker'] = self.history.get('ticker')
+        return df[['ticker', 'date', 'from', 'to', 'reason']]
