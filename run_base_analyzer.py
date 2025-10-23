@@ -91,7 +91,7 @@ def run_base_analysis(output_filename='base_analysis_results.csv', input_filenam
                 base_count = len(base_start_events)
 
                 # 最終状態に基づいてステータスを設定
-                status = '上昇中' if base_analyzer.state == 'WAITING_FOR_SEPARATION' else '-'
+                status = 'Rising' if base_analyzer.state == 'WAITING_FOR_SEPARATION' else '-'
 
 
                 results.append({
