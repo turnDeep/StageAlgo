@@ -124,11 +124,11 @@ def calculate_all_basic_indicators(df: pd.DataFrame, interval: str = '1d') -> pd
         ema_short, ema_long = 8, 21
 
     # 1. 移動平均線
-    result_df[f'SMA_{ma_short}'] = calculate_sma(df, 'Close', ma_short)
-    result_df[f'SMA_{ma_mid}'] = calculate_sma(df, 'Close', ma_mid)
-    result_df[f'SMA_{ma_long}'] = calculate_sma(df, 'Close', ma_long)
-    result_df[f'EMA_{ema_long}'] = calculate_ema(df, 'Close', ema_long)
-    result_df[f'EMA_{ema_short}'] = calculate_ema(df, 'Close', ema_short)
+    result_df[f'SMA_{ma_short}'] = calculate_sma(result_df, 'Close', ma_short)
+    result_df[f'SMA_{ma_mid}'] = calculate_sma(result_df, 'Close', ma_mid)
+    result_df[f'SMA_{ma_long}'] = calculate_sma(result_df, 'Close', ma_long)
+    result_df[f'EMA_{ema_long}'] = calculate_ema(result_df, 'Close', ema_long)
+    result_df[f'EMA_{ema_short}'] = calculate_ema(result_df, 'Close', ema_short)
 
     # 2. 移動平均の傾き
     result_df[f'SMA_{ma_short}_Slope'] = calculate_ma_slope(result_df[f'SMA_{ma_short}'], slope_period)
@@ -136,28 +136,28 @@ def calculate_all_basic_indicators(df: pd.DataFrame, interval: str = '1d') -> pd
     result_df[f'SMA_{ma_long}_Slope'] = calculate_ma_slope(result_df[f'SMA_{ma_long}'], slope_period)
 
     # 3. 52週高値・安値
-    high_52w = df['High'].rolling(window=high_low_window, min_periods=high_low_window // 2).max()
-    low_52w = df['Low'].rolling(window=high_low_window, min_periods=high_low_window // 2).min()
+    high_52w = result_df['High'].rolling(window=high_low_window, min_periods=high_low_window // 2).max()
+    low_52w = result_df['Low'].rolling(window=high_low_window, min_periods=high_low_window // 2).min()
     result_df['High_52W'] = high_52w
     result_df['Low_52W'] = low_52w
-    result_df['Dist_From_52W_High_Pct'] = ((df['Close'] - high_52w) / high_52w * 100)
-    result_df['Dist_From_52W_Low_Pct'] = ((df['Close'] - low_52w) / low_52w * 100)
+    result_df['Dist_From_52W_High_Pct'] = ((result_df['Close'] - high_52w) / high_52w * 100)
+    result_df['Dist_From_52W_Low_Pct'] = ((result_df['Close'] - low_52w) / low_52w * 100)
 
     # 4. 現在価格と各MAの乖離率
-    result_df[f'Deviation_From_SMA{ma_short}_Pct'] = ((df['Close'] - result_df[f'SMA_{ma_short}']) / result_df[f'SMA_{ma_short}'] * 100)
-    result_df[f'Deviation_From_SMA{ma_mid}_Pct'] = ((df['Close'] - result_df[f'SMA_{ma_mid}']) / result_df[f'SMA_{ma_mid}'] * 100)
-    result_df[f'Deviation_From_SMA{ma_long}_Pct'] = ((df['Close'] - result_df[f'SMA_{ma_long}']) / result_df[f'SMA_{ma_long}'] * 100)
+    result_df[f'Deviation_From_SMA_{ma_short}_Pct'] = ((result_df['Close'] - result_df[f'SMA_{ma_short}']) / result_df[f'SMA_{ma_short}'] * 100)
+    result_df[f'Deviation_From_SMA_{ma_mid}_Pct'] = ((result_df['Close'] - result_df[f'SMA_{ma_mid}']) / result_df[f'SMA_{ma_mid}'] * 100)
+    result_df[f'Deviation_From_SMA_{ma_long}_Pct'] = ((result_df['Close'] - result_df[f'SMA_{ma_long}']) / result_df[f'SMA_{ma_long}'] * 100)
 
     # 5. ATR関連
-    result_df[f'ATR_{atr_period}'] = calculate_atr(df, atr_period)
-    result_df['ATR_Pct'] = (result_df[f'ATR_{atr_period}'] / df['Close'] * 100)
+    result_df[f'ATR_{atr_period}'] = calculate_atr(result_df, atr_period)
+    result_df['ATR_Pct'] = (result_df[f'ATR_{atr_period}'] / result_df['Close'] * 100)
 
     # 6. 出来高関連
-    result_df[f'Volume_SMA_{vol_sma_period}'] = calculate_sma(df, 'Volume', vol_sma_period)
-    result_df['Relative_Volume'] = df['Volume'] / result_df[f'Volume_SMA_{vol_sma_period}']
+    result_df[f'Volume_SMA_{vol_sma_period}'] = calculate_sma(result_df, 'Volume', vol_sma_period)
+    result_df['Relative_Volume'] = result_df['Volume'] / result_df[f'Volume_SMA_{vol_sma_period}']
 
     # 7. OBV
-    result_df['OBV'] = calculate_obv(df)
+    result_df['OBV'] = calculate_obv(result_df)
 
     return result_df
 
