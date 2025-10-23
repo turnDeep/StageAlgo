@@ -137,4 +137,4 @@ stage_history_*/
 stage*.csv
 *tradingview.txt
 *-screener_results.csv
-*-base.csvdata_cache/
+*-base.csv

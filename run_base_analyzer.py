@@ -1,124 +1,123 @@
 import pandas as pd
-from multiprocessing import Pool, cpu_count
-from pathlib import Path
-import pickle
-from tqdm import tqdm
-import os
-
-# 必要なモジュールをインポート
+from data_fetcher import fetch_stock_data
+from indicators import calculate_all_basic_indicators
 from stage_detector import StageDetector
 from base_minervini_analyzer import BaseMinerviniAnalyzer
+import os
 
-# グローバル変数としてキャッシュデータを保持
-worker_cache_data = None
-
-def init_worker(cache_file):
+def run_base_analysis(output_filename='base_analysis_results.csv', input_filename=None):
     """
-    各ワーカープロセスの初期化関数。キャッシュファイルを一度だけ読み込む。
-    """
-    global worker_cache_data
-    if cache_file and Path(cache_file).exists():
-        try:
-            with open(cache_file, 'rb') as f:
-                worker_cache_data = pickle.load(f)
-        except Exception:
-            worker_cache_data = {} # エラー時は空の辞書
-    else:
-        worker_cache_data = {}
-
-def analyze_base_with_cache(args):
-    """
-    キャッシュデータを使用してベース分析を実行（マルチプロセスワーカー関数）。
+    株価データを取得し、ステージ2の銘柄に対してベース分析を実行し、結果をCSVとTradingViewリストに出力する。
 
     Args:
-        args (tuple): (ticker, exchange) のタプル。
-
-    Returns:
-        dict: 分析結果。分析対象外またはエラーの場合はNone。
+        output_filename (str, optional): 出力するCSVファイル名.
+                                        Defaults to 'base_analysis_results.csv'.
+        input_filename (str, optional): 分析対象の銘柄リストCSVファイル名.
+                                       指定されない場合は'stock.csv'を使用.
     """
-    ticker, exchange = args
-    global worker_cache_data
-
     try:
-        if worker_cache_data is None or ticker not in worker_cache_data:
-            return None
+        if input_filename:
+            # 指定されたファイルから銘柄リストを読み込む（既にステージ2と仮定）
+            stock_list = pd.read_csv(input_filename).dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
+            print(f"✓ {input_filename} から {len(stock_list)} 銘柄を読み込みました (ステージ2として扱います)")
+        else:
+            # デフォルトのstock.csvから全銘柄を読み込む
+            stock_list = pd.read_csv('stock.csv').dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
+            print(f"✓ stock.csv から {len(stock_list)} 銘柄を読み込みました")
 
-        df = worker_cache_data[ticker]['indicators_df'].copy()
-
-        if df is None or len(df) < 252:
-            return None
-
-        stage_detector = StageDetector(df)
-        template_result = stage_detector.check_minervini_template()
-        criteria_met = template_result.get('criteria_met', 0)
-
-        base_analyzer = BaseMinerviniAnalyzer(df.copy())
-        events = base_analyzer.analyze()
-
-        if not events:
-            return None
-
-        base_start_events = [e for e in events if e['event'] == 'BASE_START']
-        if not base_start_events:
-            return None
-
-        latest_base_start = base_start_events[-1]
-        resistance_price = latest_base_start['resistance_price']
-        resistance_date = pd.to_datetime(latest_base_start['date'])
-        days_since_resistance = (pd.Timestamp.now(tz='America/New_York') - resistance_date).days
-        base_count = len(base_start_events)
-        status = 'Rising' if base_analyzer.state == 'WAITING_FOR_SEPARATION' else '-'
-
-        return {
-            'Ticker': ticker,
-            'Exchange': exchange,
-            'Stage': 2,
-            'Base Count': base_count,
-            'Resistance Price': f"{resistance_price:.2f}",
-            'Days Since Resistance': days_since_resistance,
-            'Minervini Criteria Met': criteria_met,
-            'Status': status,
-        }
-
-    except Exception as e:
-        return None
-
-
-def run_base_analysis(output_filename='base_analysis_results.csv', input_filename=None, cache_file=None):
-    """
-    マルチプロセスとキャッシュを利用してベース分析を実行する。
-    """
-    if not cache_file or not Path(cache_file).exists():
-        print(f"エラー: キャッシュファイルが見つかりません: {cache_file}")
-        # ここで代替処理（手動データ取得など）を実装することもできるが、今回は終了する
-        return
-
-    print(f"✓ {cache_file} のキャッシュデータを利用します")
-
-    try:
-        stock_list = pd.read_csv(input_filename).dropna(subset=['Ticker', 'Exchange']).drop_duplicates(subset=['Ticker'])
-        analysis_args = [(row['Ticker'], row['Exchange']) for _, row in stock_list.iterrows()]
-        print(f"✓ {input_filename} から {len(stock_list)} 銘柄を読み込みました")
+        tickers_to_analyze = stock_list.to_dict('records')
 
     except FileNotFoundError:
-        print(f"エラー: {input_filename} が見つかりません。")
-        return
+        print(f"Error: {input_filename or 'stock.csv'} not found.")
+        return # ファイルがなければ処理を終了
 
     results = []
+    for stock_info in tickers_to_analyze:
+        try:
+            ticker = stock_info['Ticker']
+            exchange = stock_info['Exchange']
 
-    print(f"{len(analysis_args)} 銘柄のベース分析を開始します...")
-    # initializer を使って各ワーカーにキャッシュをロード
-    with Pool(processes=cpu_count(), initializer=init_worker, initargs=(cache_file,)) as pool:
-        for result in tqdm(pool.imap_unordered(analyze_base_with_cache, analysis_args), total=len(analysis_args), desc="Base Analyzing"):
-            if result:
-                results.append(result)
+            print(f"Analyzing {ticker}...")
+            # 5年分のデータを取得
+            df, _ = fetch_stock_data(ticker, period='5y')
 
+            if df is None or len(df) < 252:
+                # print(f"Could not fetch sufficient data for {ticker}")
+                continue
+
+            # テクニカル指標を計算
+            df = calculate_all_basic_indicators(df)
+
+            # ステージ検出ロジックの分岐
+            is_stage2 = False
+            if input_filename:
+                # 入力ファイルが指定されている場合、常にステージ2とみなす
+                is_stage2 = True
+            else:
+                # デフォルトの場合、ステージを判定
+                stage_detector = StageDetector(df)
+                stage = stage_detector.determine_stage()
+                if stage == 2:
+                    is_stage2 = True
+
+            # ステージ2の場合のみベース分析を実行
+            if is_stage2:
+                print(f"{ticker} is in Stage 2. Running base analysis...")
+                # ステージ検出器のインスタンス化（Minerviniチェックのため）
+                stage_detector = StageDetector(df)
+                template_result = stage_detector.check_minervini_template()
+                criteria_met = template_result.get('criteria_met', 0)
+
+                # ベース分析
+                base_analyzer = BaseMinerviniAnalyzer(df.copy())
+                events = base_analyzer.analyze()
+
+                if not events:
+                    continue
+
+                # 最新のベース開始イベントを取得
+                base_start_events = [e for e in events if e['event'] == 'BASE_START']
+                if not base_start_events:
+                    continue
+
+                latest_base_start = base_start_events[-1]
+                resistance_price = latest_base_start['resistance_price']
+
+                # レジスタンスからの経過日数を計算
+                resistance_date = pd.to_datetime(latest_base_start['date'])
+                days_since_resistance = (pd.to_datetime('today') - resistance_date).days
+
+                # ベースカウンティング
+                base_count = len(base_start_events)
+
+                # 最終状態に基づいてステータスを設定
+                status = 'Rising' if base_analyzer.state == 'WAITING_FOR_SEPARATION' else '-'
+
+
+                results.append({
+                    'Ticker': ticker,
+                    'Exchange': exchange,
+                    'Stage': 2,
+                    'Base Count': base_count,
+                    'Resistance Price': f"{resistance_price:.2f}",
+                    'Days Since Resistance': days_since_resistance,
+                    'Minervini Criteria Met': criteria_met,
+                    'Status': status,
+                })
+        except Exception as e:
+            # ループ内のエラーを捕捉し、コンソールに表示して処理を続行
+            print(f"An error occurred while processing {ticker}: {e}. Skipping.")
+            continue
+
+    # 結果をCSVファイルとTradingViewリストに出力
     if results:
-        results_df = pd.DataFrame(results).sort_values(by='Days Since Resistance', ascending=True)
+        results_df = pd.DataFrame(results)
 
-        results_df.to_csv(output_filename, index=False, encoding='utf-8-sig')
-        print(f"\n✓ ベース分析が完了しました。{len(results_df)}銘柄の結果を {output_filename} に保存しました")
+        # 1. CSVファイルに保存
+        results_df.to_csv(output_filename, index=False)
+        print(f"Base analysis complete. Results saved to {output_filename}")
 
+        # 2. TradingView用リストを生成して保存
         tradingview_list = [f"{row['Exchange']}:{row['Ticker']}" for _, row in results_df.iterrows()]
         tradingview_str = ",".join(tradingview_list)
 
@@ -126,11 +125,11 @@ def run_base_analysis(output_filename='base_analysis_results.csv', input_filenam
         try:
             with open(txt_output_filename, 'w', encoding='utf-8') as f:
                 f.write(tradingview_str)
-            print(f"✓ TradingView用リストを {txt_output_filename} に保存しました")
+            print(f"TradingView list saved to {txt_output_filename}")
         except Exception as e:
-            print(f"警告: TradingView用ファイルの書き込みに失敗しました: {e}")
+            print(f"Warning: Could not write TradingView file: {e}")
     else:
-        print("\nベース分析の対象となる銘柄は見つかりませんでした。")
+        print("No Stage 2 stocks with bases found.")
 
 if __name__ == "__main__":
     run_base_analysis()

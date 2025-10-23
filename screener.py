@@ -12,8 +12,6 @@ import os
 import shutil
 from datetime import datetime
 import pytz
-import pickle
-from pathlib import Path
 
 from data_fetcher import fetch_stock_data
 from indicators import calculate_all_basic_indicators
@@ -33,27 +31,26 @@ def analyze_ticker_for_stage2(args):
         args: (ticker, exchange) のタプル
 
     Returns:
-        tuple: (dict: ステージ2の銘柄情報, pd.DataFrame: 元の株価データ, pd.DataFrame: 指標データ) または (None, None, None)
+        dict: ステージ2の銘柄情報、またはNone
     """
     ticker, exchange = args
 
     try:
-        # ベース分析で5年データが必要なため、ここで5年分取得する
-        stock_df, benchmark_df = fetch_stock_data(ticker, period='5y')
+        stock_df, benchmark_df = fetch_stock_data(ticker, period='2y')
         if stock_df is None or len(stock_df) < 252:
-            return None, None, None
+            return None
 
         indicator_df = calculate_all_basic_indicators(stock_df)
         benchmark_df_calc = calculate_all_basic_indicators(benchmark_df)
 
         if indicator_df.empty or len(indicator_df) < 252:
-            return None, None, None
+            return None
         
         indicator_df = indicator_df.dropna()
         benchmark_df_calc = benchmark_df_calc.dropna()
 
         if len(indicator_df) < 252:
-            return None, None, None
+            return None
 
         rs_calculator = RSCalculator(indicator_df, benchmark_df_calc)
         rs_score_series = rs_calculator.calculate_ibd_rs_score()
@@ -64,15 +61,13 @@ def analyze_ticker_for_stage2(args):
 
         detector = StageDetector(indicator_df, benchmark_df_calc)
         rs_rating = indicator_df.iloc[-1].get('RS_Rating')
-        # 過去2年分のデータでステージ判定
-        current_stage = detector.determine_stage(rs_rating=rs_rating, data_slice_years=2)
+        current_stage = detector.determine_stage(rs_rating=rs_rating)
 
         if current_stage != 2:
-            return None, None, None
+            return None
 
-        # 移行日判定は過去2年で行う
         stage2_transition_date = find_stage2_transition_date(
-            indicator_df.last('2y'), # 直近2年のデータに絞る
+            indicator_df,
             benchmark_df_calc
         )
 
@@ -91,7 +86,7 @@ def analyze_ticker_for_stage2(args):
                 
                 # 移行日時点のデータでMinerviniテンプレートをチェック
                 historical_df = indicator_df.loc[:transition_date_str]
-                if len(historical_df) >= 200:
+                if len(historical_df) >= 200:  # 指標計算に十分なデータがあるか確認
                     minervini_detector = MinerviniTemplateDetector(historical_df)
                     minervini_results = minervini_detector.check_template()
                     minervini_criteria_met = minervini_results.get('criteria_met', 0)
@@ -114,10 +109,10 @@ def analyze_ticker_for_stage2(args):
             'Relative_Volume': latest.get('Relative_Volume', 1.0)
         }
 
-        return result, stock_df, indicator_df
+        return result
 
     except Exception as e:
-        return None, None, None
+        return None
 
 
 def find_stage2_transition_date(df, benchmark_df):
@@ -191,11 +186,6 @@ def main():
     tz = pytz.timezone('America/New_York')
     date_str = datetime.now(tz).strftime('%Y%m%d')
 
-    # キャッシュディレクトリを作成
-    cache_dir = Path('./data_cache')
-    cache_dir.mkdir(exist_ok=True)
-    cache_file = cache_dir / f"{date_str}-data_cache.pkl"
-
     # 出力ファイル名を生成
     stage_output_filename = f"{date_str}-stage.csv"
     base_analyzer_output_filename = f"{date_str}-base.csv"
@@ -218,8 +208,7 @@ def main():
 
     # ベンチマークデータ（SPY）を取得
     print("ベンチマークデータ（SPY）を取得中...")
-    # 5年分のデータを取得
-    _, benchmark_df = fetch_stock_data('SPY', period='5y')
+    _, benchmark_df = fetch_stock_data('SPY', period='2y')
     if benchmark_df is None or benchmark_df.empty:
         print("エラー: ベンチマークデータを取得できませんでした。")
         return
@@ -231,24 +220,13 @@ def main():
 
     # 銘柄分析
     results = []
-    cache_data = {}
     print("銘柄分析を開始します...")
     print()
 
     with Pool(cpu_count()) as pool:
-        for result, stock_df, indicators_df in tqdm(pool.imap_unordered(analyze_ticker_for_stage2, tickers), total=len(tickers), desc="Analyzing"):
+        for result in tqdm(pool.imap_unordered(analyze_ticker_for_stage2, tickers), total=len(tickers), desc="Analyzing"):
             if result:
                 results.append(result)
-                ticker = result['Ticker']
-                cache_data[ticker] = {
-                    'stock_df': stock_df,
-                    'indicators_df': indicators_df
-                }
-
-    # キャッシュをファイルに保存
-    with open(cache_file, 'wb') as f:
-        pickle.dump(cache_data, f)
-    print(f"\n✓ データキャッシュを {cache_file} に保存しました")
 
     if not results:
         print("\n" + "=" * 70)
@@ -263,7 +241,7 @@ def main():
     # ステージ2のスクリーナー結果を保存
     results_df_to_save = results_df.drop('Stage2_Transition_Date_dt', axis=1)
     results_df_to_save.to_csv(stage_output_filename, index=False, encoding='utf-8-sig')
-    print(f"✓ {len(results_df)}銘柄をステージ2として検出しました")
+    print(f"\n✓ {len(results_df)}銘柄をステージ2として検出しました")
     print(f"✓ 結果を {stage_output_filename} に保存しました")
 
     # TradingView用のテキストファイルを作成（直近でステージ2になったもののみ）
@@ -309,11 +287,10 @@ def main():
     print("追加分析: Base Analyzerを実行します...")
     print("=" * 70)
     try:
-        # ステージ2の分析結果とキャッシュファイルをインプットとして渡す
+        # ステージ2の分析結果をインプットとして渡すことで、処理を効率化
         run_base_analysis(
             output_filename=base_analyzer_output_filename,
-            input_filename=stage_output_filename,
-            cache_file=str(cache_file)
+            input_filename=stage_output_filename
         )
     except Exception as e:
         print(f"エラー: Base Analyzerの実行中にエラーが発生しました: {e}")
