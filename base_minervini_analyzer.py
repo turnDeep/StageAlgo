@@ -327,8 +327,8 @@ class BaseMinerviniAnalyzer:
             }
             return
 
-        # VCPパターンの検証 (意図的に無効化)
-        vcp_valid = True
+        # VCPパターンの検証
+        vcp_valid = self._verify_vcp_pattern()
 
         # 出来高検証
         volume_valid, volume_surge_pct = self._verify_breakout_volume(
@@ -355,7 +355,7 @@ class BaseMinerviniAnalyzer:
             quality = "要注意"
 
         # 総合判定
-        if vcp_valid and volume_valid and depth_valid:
+        if volume_valid and depth_valid:
             # 有効なブレイクアウト
             self.base_count += 1
 
@@ -459,7 +459,7 @@ class BaseMinerviniAnalyzer:
         return True
 
     def _verify_breakout_volume(self, date: pd.Timestamp, row: pd.Series,
-                              historical_df: pd.DataFrame) -> Tuple[bool, float]:
+                               historical_df: pd.DataFrame) -> Tuple[bool, float]:
         """
         ブレイクアウト時の出来高を検証
 
@@ -484,7 +484,7 @@ class BaseMinerviniAnalyzer:
         )
 
     def _handle_waiting_separation(self, date: pd.Timestamp, row: pd.Series,
-                                 historical_df: pd.DataFrame, events: List[Dict]):
+                                   historical_df: pd.DataFrame, events: List[Dict]):
         """分離待ちステートの処理"""
 
         # 20%の上昇を確認
