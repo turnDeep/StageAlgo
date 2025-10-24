@@ -5,3 +5,4 @@ numpy
 pandas-ta
 scipy
 tqdm
+pytz
