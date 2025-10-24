@@ -1,302 +1,83 @@
 """
-Stage 2 Screener with Transition Date Detection
+Stock Screener Orchestrator
 
-このスクリプトは、stock.csvから銘柄を読み込み、現在ステージ2にある銘柄を抽出します。
-各銘柄について、ステージ2への移行日も特定して出力します。
+【役割】
+株式分析ワークフローの全体制御
+
+【責任】
+1. ステージ分析スクリプトの実行
+2. ベース分析スクリプトの実行
+3. 各分析ステップ間のデータ（ファイル名）の引き渡し
+
+【連携】
+- run_stage_analyzer.py: ステージ2スクリーニング機能を呼び出す
+- run_base_analyzer.py: ベース分析機能を呼び出す
 """
-import pandas as pd
-from tqdm import tqdm
-from multiprocessing import Pool, cpu_count
-import warnings
-import os
-import shutil
+import sys
 from datetime import datetime
 import pytz
 
-from data_fetcher import fetch_stock_data
-from indicators import calculate_all_basic_indicators
-from stage_detector import StageDetector
-from rs_calculator import RSCalculator
-from minervini_template_detector import MinerviniTemplateDetector
+# 分析モジュールをインポート
+from run_stage_analyzer import run_stage_screening
 from run_base_analyzer import run_base_analysis
-
-warnings.filterwarnings('ignore')
-
-
-def analyze_ticker_for_stage2(args):
-    """
-    個別銘柄を分析し、ステージ2の場合は移行日と追加情報を特定
-
-    Args:
-        args: (ticker, exchange) のタプル
-
-    Returns:
-        dict: ステージ2の銘柄情報、またはNone
-    """
-    ticker, exchange = args
-
-    try:
-        stock_df, benchmark_df = fetch_stock_data(ticker, period='2y')
-        if stock_df is None or len(stock_df) < 252:
-            return None
-
-        indicator_df = calculate_all_basic_indicators(stock_df)
-        benchmark_df_calc = calculate_all_basic_indicators(benchmark_df)
-
-        if indicator_df.empty or len(indicator_df) < 252:
-            return None
-        
-        indicator_df = indicator_df.dropna()
-        benchmark_df_calc = benchmark_df_calc.dropna()
-
-        if len(indicator_df) < 252:
-            return None
-
-        rs_calculator = RSCalculator(indicator_df, benchmark_df_calc)
-        rs_score_series = rs_calculator.calculate_ibd_rs_score()
-        rs_rating_series = rs_score_series.rolling(window=252, min_periods=60).apply(
-            lambda x: pd.Series(x).rank(pct=True).iloc[-1] * 99, raw=False
-        ).fillna(50)
-        indicator_df['RS_Rating'] = rs_rating_series
-
-        detector = StageDetector(indicator_df, benchmark_df_calc)
-        rs_rating = indicator_df.iloc[-1].get('RS_Rating')
-        current_stage = detector.determine_stage(rs_rating=rs_rating)
-
-        if current_stage != 2:
-            return None
-
-        stage2_transition_date = find_stage2_transition_date(
-            indicator_df,
-            benchmark_df_calc
-        )
-
-        latest = indicator_df.iloc[-1]
-        current_price = latest['Close']
-        transition_close = None
-        price_change_pct = None
-        minervini_criteria_met = 0  # デフォルト値
-
-        if stage2_transition_date:
-            transition_date_str = stage2_transition_date.strftime('%Y-%m-%d')
-            if transition_date_str in indicator_df.index:
-                transition_close = indicator_df.loc[transition_date_str]['Close']
-                if transition_close > 0:
-                    price_change_pct = ((current_price - transition_close) / transition_close) * 100
-                
-                # 移行日時点のデータでMinerviniテンプレートをチェック
-                historical_df = indicator_df.loc[:transition_date_str]
-                if len(historical_df) >= 200:  # 指標計算に十分なデータがあるか確認
-                    minervini_detector = MinerviniTemplateDetector(historical_df)
-                    minervini_results = minervini_detector.check_template()
-                    minervini_criteria_met = minervini_results.get('criteria_met', 0)
-
-        result = {
-            'Ticker': ticker,
-            'Exchange': exchange,
-            'Stage': 'Stage 2',
-            'Stage2_Transition_Date': stage2_transition_date.strftime('%Y-%m-%d') if stage2_transition_date else 'Unknown',
-            'Days_Since_Transition': (indicator_df.index[-1] - stage2_transition_date).days if stage2_transition_date else None,
-            'Current_Price': current_price,
-            'Transition_Close': transition_close,
-            'Price_Change_%': price_change_pct,
-            'Minervini_Indicators_Met': minervini_criteria_met,
-            'RS_Rating': latest.get('RS_Rating', 50),
-            'SMA_50': latest.get('SMA_50', 0),
-            'SMA_150': latest.get('SMA_150', 0),
-            'SMA_200': latest.get('SMA_200', 0),
-            'Volume': latest['Volume'],
-            'Relative_Volume': latest.get('Relative_Volume', 1.0)
-        }
-
-        return result
-
-    except Exception as e:
-        return None
-
-
-def find_stage2_transition_date(df, benchmark_df):
-    """
-    ステージ2への移行日を特定
-
-    過去1年間（252営業日）を遡って、ステージ1またはステージ4から
-    ステージ2に移行した日を特定します。
-
-    Args:
-        df: 指標計算済みのDataFrame
-        benchmark_df: ベンチマークのDataFrame
-
-    Returns:
-        pd.Timestamp: ステージ2への移行日、見つからない場合はNone
-    """
-    # 過去252日（約1年）を遡る
-    lookback = min(252, len(df) - 200)
-
-    if lookback < 50:
-        return None
-
-    prev_stage = None
-
-    # 古い日付から順に確認
-    for i in range(len(df) - lookback, len(df)):
-        if i < 200:
-            continue
-
-        current_date = df.index[i]
-        historical_data = df.loc[:current_date]
-        historical_benchmark = benchmark_df.reindex(
-            historical_data.index,
-            method='ffill'
-        )
-
-        if len(historical_data) < 200:
-            continue
-
-        try:
-            # その時点でのステージを判定
-            temp_detector = StageDetector(historical_data, historical_benchmark)
-            rs_rating = historical_data.iloc[-1].get('RS_Rating')
-            stage = temp_detector.determine_stage(
-                rs_rating=rs_rating,
-                previous_stage=prev_stage
-            )
-
-            # ステージ2への移行を検出
-            if stage == 2 and prev_stage is not None and prev_stage != 2:
-                return current_date
-
-            prev_stage = stage
-
-        except Exception as e:
-            continue
-
-    return None
 
 
 def main():
     """
     メイン処理
+    ステージ分析とベース分析を順番に実行する
     """
     print("=" * 70)
-    print("Stage 2 Screener with Base Analysis")
+    print("Stock Analysis Workflow Started")
     print("=" * 70)
     print()
 
-    # アメリカ東部時間で現在の日付を取得
-    tz = pytz.timezone('America/New_York')
-    date_str = datetime.now(tz).strftime('%Y%m%d')
-
-    # 出力ファイル名を生成
-    stage_output_filename = f"{date_str}-stage.csv"
-    base_analyzer_output_filename = f"{date_str}-base.csv"
-
-    # stock.csvを読み込み
+    # --- ステップ1: ステージ分析 ---
+    print(">>> Step 1: Running Stage 2 Screener...")
     try:
-        stock_list_df = pd.read_csv('stock.csv', encoding='utf-8-sig')
-        stock_list_df.dropna(subset=['Ticker'], inplace=True)
-        tickers = [(row['Ticker'], row['Exchange']) for index, row in stock_list_df.iterrows()]
-    except FileNotFoundError:
-        print("エラー: stock.csvが見つかりません。")
-        print("get_tickers.pyを実行してstock.csvを作成してください。")
-        return
-    except Exception as e:
-        print(f"エラー: stock.csvの読み込み中にエラーが発生しました: {e}")
-        return
-
-    print(f"✓ {len(tickers)}銘柄を読み込みました")
-    print()
-
-    # ベンチマークデータ（SPY）を取得
-    print("ベンチマークデータ（SPY）を取得中...")
-    _, benchmark_df = fetch_stock_data('SPY', period='2y')
-    if benchmark_df is None or benchmark_df.empty:
-        print("エラー: ベンチマークデータを取得できませんでした。")
-        return
-
-    benchmark_df = calculate_all_basic_indicators(benchmark_df)
-    benchmark_df = benchmark_df.dropna()
-    print("✓ ベンチマークデータを取得しました")
-    print()
-
-    # 銘柄分析
-    results = []
-    print("銘柄分析を開始します...")
-    print()
-
-    with Pool(cpu_count()) as pool:
-        for result in tqdm(pool.imap_unordered(analyze_ticker_for_stage2, tickers), total=len(tickers), desc="Analyzing"):
-            if result:
-                results.append(result)
-
-    if not results:
-        print("\n" + "=" * 70)
-        print("ステージ2の銘柄は見つかりませんでした。")
-        print("=" * 70)
-        return
-
-    results_df = pd.DataFrame(results)
-    results_df['Stage2_Transition_Date_dt'] = pd.to_datetime(results_df['Stage2_Transition_Date'], errors='coerce')
-    results_df = results_df.sort_values('Stage2_Transition_Date_dt', ascending=False, na_position='last')
-
-    # ステージ2のスクリーナー結果を保存
-    results_df_to_save = results_df.drop('Stage2_Transition_Date_dt', axis=1)
-    results_df_to_save.to_csv(stage_output_filename, index=False, encoding='utf-8-sig')
-    print(f"\n✓ {len(results_df)}銘柄をステージ2として検出しました")
-    print(f"✓ 結果を {stage_output_filename} に保存しました")
-
-    # TradingView用のテキストファイルを作成（直近でステージ2になったもののみ）
-    if not results_df.empty:
-        most_recent_transition_date = results_df['Stage2_Transition_Date_dt'].max()
-        recent_transition_df = results_df[results_df['Stage2_Transition_Date_dt'] == most_recent_transition_date]
+        # run_stage_analyzer.pyのスクリーニング関数を呼び出す
+        # 成功すると、結果が保存されたCSVファイル名が返される
+        stage_output_filename = run_stage_screening(input_filename='stock.csv')
         
-        if not recent_transition_df.empty:
-            tradingview_list = [f"{row['Exchange']}:{row['Ticker']}" for _, row in recent_transition_df.iterrows()]
-            tradingview_str = ",".join(tradingview_list)
-            tv_filename = f"{date_str}-stage.txt"
-            try:
-                with open(tv_filename, 'w', encoding='utf-8') as f:
-                    f.write(tradingview_str)
-                print(f"✓ TradingView用リスト（直近移行銘柄）を {tv_filename} に保存しました")
-            except Exception as e:
-                print(f"警告: TradingView用ファイルの書き込み中にエラーが発生しました: {e}")
-        else:
-            print("✓ TradingView用リスト: 直近で移行した銘柄はありませんでした。")
+        # ステージ分析で対象銘柄が見つからなかった場合
+        if stage_output_filename is None:
+            print("\n" + "=" * 70)
+            print("ステージ2の銘柄が見つからなかったため、処理を終了します。")
+            print("=" * 70)
+            sys.exit(0)
 
-    # サマリーを表示
+        print("✓ Stage 2 Screener finished successfully.")
+        print(f"  - Output file: {stage_output_filename}")
+
+    except Exception as e:
+        print(f"エラー: ステージ分析の実行中に予期せぬエラーが発生しました: {e}")
+        sys.exit(1)
+
+
+    # --- ステップ2: ベース分析 ---
     print("\n" + "=" * 70)
-    print("分析結果サマリー")
-    print("=" * 70)
-    known_transition = results_df[results_df['Stage2_Transition_Date'] != 'Unknown'].copy()
-    if not known_transition.empty:
-        known_transition.loc[:, 'Price_Change_%'] = known_transition['Price_Change_%'].fillna(0)
-        avg_days = known_transition['Days_Since_Transition'].mean()
-        avg_price_change = known_transition['Price_Change_%'].mean()
-        print(f"ステージ2移行日が判明: {len(known_transition)}銘柄")
-        print(f"平均経過日数: {avg_days:.0f}日")
-        print(f"移行日からの平均株価変動率: {avg_price_change:.2f}%\n")
+    print(">>> Step 2: Running Base Analyzer...")
 
-    print("最近ステージ2に移行した銘柄（Top 10）:")
-    print("-" * 70)
-    display_cols = ['Ticker', 'Exchange', 'Stage2_Transition_Date', 'Days_Since_Transition', 'Current_Price', 'Transition_Close', 'Price_Change_%', 'RS_Rating', 'Minervini_Indicators_Met']
-    display_cols = [col for col in display_cols if col in results_df.columns]
-    print(results_df[display_cols].head(10).to_string(index=False))
-    print()
-
-    # --- Base Analyzerの実行 ---
-    print("\n" + "=" * 70)
-    print("追加分析: Base Analyzerを実行します...")
-    print("=" * 70)
     try:
-        # ステージ2の分析結果をインプットとして渡すことで、処理を効率化
+        # 日付プレフィックスからベース分析用の出力ファイル名を生成
+        date_prefix = stage_output_filename.split('-')[0]
+        base_output_filename = f"{date_prefix}-base.csv"
+
+        # run_base_analyzer.pyの分析関数を呼び出す
+        # ステージ分析の結果をインプットとして渡す
         run_base_analysis(
-            output_filename=base_analyzer_output_filename,
+            output_filename=base_output_filename,
             input_filename=stage_output_filename
         )
+        print("✓ Base Analyzer finished successfully.")
+        print(f"  - Output file: {base_output_filename}")
+
     except Exception as e:
-        print(f"エラー: Base Analyzerの実行中にエラーが発生しました: {e}")
+        print(f"エラー: ベース分析の実行中にエラーが発生しました: {e}")
+        sys.exit(1)
 
     print("\n" + "=" * 70)
-    print("すべての分析が完了しました。")
+    print("All analysis workflows completed successfully!")
     print("=" * 70)
 
 
