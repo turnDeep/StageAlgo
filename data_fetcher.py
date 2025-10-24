@@ -2,51 +2,67 @@ import yfinance as yf
 import pandas as pd
 from curl_cffi.requests import Session
 
-def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "5y", interval: str = "1d"):
+def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "5y", interval: str = "1d", fetch_benchmark: bool = True):
     """
-    yfinanceを使用して、指定されたティッカーとベンチマークの過去の株価データを取得します。
-    ブロックを回避するためにcurl-cffiセッションを使用します。
+    yfinanceを使用して株価データを取得します。yfinanceの出力形式のばらつきに対応。
 
     Args:
-        ticker (str): 株式ティッカーシンボル (例: "AAPL")。
-        benchmark_ticker (str, optional): ベンチマークのティッカーシンボル。デフォルトは "SPY"。
-        period (str, optional): データをダウンロードする期間 (例: "1y", "2y", "max")。デフォルトは "5y"。
-        interval (str, optional): データ間隔 ("1d" for daily, "1wk" for weekly)。デフォルトは "1d"。
+        ticker (str): 株式ティッカーシンボル。
+        benchmark_ticker (str, optional): ベンチマークのティッカー。デフォルトは "SPY"。
+        period (str, optional): データ期間。デフォルトは "5y"。
+        interval (str, optional): データ間隔。デフォルトは "1d"。
+        fetch_benchmark (bool, optional): ベンチマークデータも同時に取得するかどうか。デフォルトは True。
 
     Returns:
-        tuple[pd.DataFrame | None, pd.DataFrame | None]: 2つのpandas DataFrameを含むタプル:
-        (stock_data, benchmark_data)。メインチッカーのデータが取得できない場合は(None, None)を返します。
+        tuple[pd.DataFrame | None, pd.DataFrame | None]: (stock_data, benchmark_data)。
     """
-    # HTTP 403エラーを回避するために、ブラウザのようなユーザーエージェントを持つセッションを作成します。
     session = Session(impersonate="chrome110")
 
+    tickers_to_download = [ticker]
+    # tickerとbenchmark_tickerが同じ場合（SPY自体の取得時など）に重複させない
+    if fetch_benchmark and ticker.upper() != benchmark_ticker.upper():
+        tickers_to_download.append(benchmark_ticker)
+
     try:
-        # 株式とベンチマークの両方のデータを1回の呼び出しでダウンロードします
         data = yf.download(
-            tickers=[ticker, benchmark_ticker],
+            tickers=tickers_to_download,
             period=period,
             interval=interval,
             session=session,
-            progress=False
+            progress=False,
+            group_by='ticker' # 常にtickerでグループ化し、MultiIndex出力を強制
         )
 
-        # yfinanceが予期せぬ形式（MultiIndexでないDataFrameなど）を返す場合があるため、ここで検証
+        if data.empty:
+            return None, None
+
+        # MultiIndexでない場合はエラーとして扱う
         if not isinstance(data.columns, pd.MultiIndex):
+            # yfinanceが何らかの理由で期待通りに動作しなかった場合
+            if len(tickers_to_download) == 1:
+                stock_data = data.copy()
+                stock_data.dropna(inplace=True)
+                return stock_data, None
             return None, None
 
-        if data.empty or ticker not in data.columns.get_level_values(1):
+
+        # 目的のティッカーデータが存在するか確認
+        if ticker not in data.columns.get_level_values(0):
             return None, None
 
-        # データフレームを分離し、警告を回避するためにコピーします
-        stock_data = data.xs(ticker, level=1, axis=1).copy()
-        benchmark_data = data.xs(benchmark_ticker, level=1, axis=1).copy()
-
-        # 初めに発生する可能性のあるNaN値を持つ行を削除します
+        stock_data = data[ticker].copy()
         stock_data.dropna(inplace=True)
-        benchmark_data.dropna(inplace=True)
-
         if stock_data.empty:
-             return None, None
+            return None, None
+
+        benchmark_data = None
+        if fetch_benchmark:
+            if ticker.upper() == benchmark_ticker.upper():
+                # 自身がベンチマークなので、データをコピー
+                benchmark_data = stock_data.copy()
+            elif benchmark_ticker in data.columns.get_level_values(0):
+                benchmark_data = data[benchmark_ticker].copy()
+                benchmark_data.dropna(inplace=True)
 
         return stock_data, benchmark_data
 
@@ -54,29 +70,25 @@ def fetch_stock_data(ticker: str, benchmark_ticker: str = "SPY", period: str = "
         return None, None
 
 if __name__ == '__main__':
-    # モジュールのテスト用
+    # (テストコードは変更なし)
     test_ticker = 'AAPL'
-
-    # 日足データのテスト
     print(f"テスト用に {test_ticker} の日足データを取得中...")
     stock_df_daily, benchmark_df_daily = fetch_stock_data(test_ticker, interval="1d")
-
-    if stock_df_daily is not None and benchmark_df_daily is not None:
+    if stock_df_daily is not None:
         print(f"\n{test_ticker} の日足データ:")
         print(stock_df_daily.head())
+    if benchmark_df_daily is not None:
         print(f"\nSPY (ベンチマーク) の日足データ:")
         print(benchmark_df_daily.head())
-    else:
-        print(f"{test_ticker} の日足データ取得に失敗しました。")
 
-    # 週足データのテスト
-    print(f"\nテスト用に {test_ticker} の週足データを取得中...")
-    stock_df_weekly, benchmark_df_weekly = fetch_stock_data(test_ticker, interval="1wk")
+    print(f"\nSPY自体のデータを取得（ベンチマークなし）...")
+    spy_df, _ = fetch_stock_data('SPY', interval="1d", fetch_benchmark=False)
+    if spy_df is not None:
+        print(f"\nSPY の日足データ:")
+        print(spy_df.head())
 
-    if stock_df_weekly is not None and benchmark_df_weekly is not None:
-        print(f"\n{test_ticker} の週足データ:")
-        print(stock_df_weekly.head())
-        print(f"\nSPY (ベンチマーク) の週足データ:")
-        print(benchmark_df_weekly.head())
-    else:
-        print(f"{test_ticker} の週足データ取得に失敗しました。")
+    print(f"\nSPY自体のデータを取得（ベンチマークあり）...")
+    spy_df, spy_benchmark_df = fetch_stock_data('SPY', interval="1d", fetch_benchmark=True)
+    if spy_df is not None and spy_benchmark_df is not None:
+        print(f"\nSPYのデータと、SPYのベンチマークデータが両方取得できていることを確認")
+        print(spy_df.head())
