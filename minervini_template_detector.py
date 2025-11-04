@@ -1,7 +1,19 @@
 """
-Mark Minervini Trend Template Detector
+Mark Minervini Trend Template Detector (改善版)
 Minerviniの8基準トレンドテンプレート判定
 Stage 2上昇トレンド内の強い銘柄を特定
+
+【改善点】
+- 柔軟なRS Rating閾値設定（デフォルト: 80）
+- 複合スコアリングシステム（基準70% + RS30%）
+- RS Ratingレベル別評価（Top 5% ~ Top 30%）
+- 61銘柄への絞込みに最適化
+
+【推奨RS閾値】
+- 70: Minervini最低基準（広範囲）
+- 80: Minervini理想的基準（推奨） ← デフォルト
+- 85: IBD基準に近い（厳格）
+- 90: エリート銘柄のみ（最厳格）
 """
 import pandas as pd
 import numpy as np
@@ -23,13 +35,19 @@ class MinerviniTemplateDetector:
     8. RS Rating ≥ 70（理想的には80-90）
     """
     
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, rs_threshold: int = 80):
         """
         Args:
             df: 指標計算済みのDataFrame（日足）
+            rs_threshold: RS Ratingの最低閾値（デフォルト: 80）
+                         - 70: Minervini最低基準（トップ30%）
+                         - 80: Minervini理想的基準（トップ20%） ← 推奨
+                         - 85: IBD基準に近い（トップ15%）
+                         - 90: エリート（トップ10%）
         """
         self.df = df
         self.latest = df.iloc[-1]
+        self.rs_threshold = rs_threshold
         
     def check_template(self) -> Dict:
         """
@@ -151,19 +169,36 @@ class MinerviniTemplateDetector:
             }
         }
         
-        # 基準8: RS Rating ≥ 70
+        # 基準8: RS Rating ≥ 閾値（デフォルト80）
         if 'RS_Rating' in self.df.columns:
             rs_rating = self.latest['RS_Rating']
-            criterion_8_passed = rs_rating >= 70
+            criterion_8_passed = rs_rating >= self.rs_threshold
+
+            # RS Ratingレベル評価
+            if rs_rating >= 95:
+                rs_level = "Exceptional (Top 5%)"
+            elif rs_rating >= 90:
+                rs_level = "Elite (Top 10%)"
+            elif rs_rating >= 85:
+                rs_level = "Strong Leader (Top 15%)"
+            elif rs_rating >= 80:
+                rs_level = "Above Average (Top 20%)"
+            elif rs_rating >= 70:
+                rs_level = "Average+ (Top 30%)"
+            else:
+                rs_level = "Below Average"
         else:
             rs_rating = None
             criterion_8_passed = False
-        
+            rs_level = "N/A"
+
         checks['criterion_8'] = {
             'passed': criterion_8_passed,
-            'description': 'RS Rating ≥ 70',
+            'description': f'RS Rating ≥ {self.rs_threshold}',
             'values': {
-                'rs_rating': rs_rating
+                'rs_rating': rs_rating,
+                'rs_level': rs_level,
+                'threshold': self.rs_threshold
             }
         }
         
@@ -171,13 +206,21 @@ class MinerviniTemplateDetector:
         criteria_met = sum(1 for c in checks.values() if c['passed'])
         template_score = (criteria_met / len(checks)) * 100
         all_pass = all(c['passed'] for c in checks.values())
-        
+
+        # 複合スコア計算（基準スコア70% + RSボーナス30%）
+        base_score = (criteria_met / 8) * 70  # 基準満足度（最大70点）
+        rs_bonus = (rs_rating / 100) * 30 if rs_rating else 0  # RSボーナス（最大30点）
+        composite_score = base_score + rs_bonus
+
         return {
             'all_criteria_met': all_pass,
             'score': template_score,
+            'composite_score': composite_score,
             'checks': checks,
             'criteria_met': criteria_met,
             'total_criteria': len(checks),
+            'rs_rating': rs_rating,
+            'rs_level': rs_level,
             'interpretation': self._interpret_results(criteria_met, checks)
         }
     
@@ -265,11 +308,14 @@ class MinerviniTemplateDetector:
         
         report = []
         report.append("="*60)
-        report.append("Mark Minervini Trend Template 分析")
+        report.append("Mark Minervini Trend Template 分析 (改善版)")
         report.append("="*60)
         report.append(f"\n総合判定: {result['criteria_met']}/8 基準 満たす")
-        report.append(f"スコア: {result['score']:.1f}/100")
-        report.append(f"ステータス: {result['interpretation']['status']}")
+        report.append(f"基準スコア: {result['score']:.1f}/100")
+        report.append(f"複合スコア: {result['composite_score']:.1f}/100 (基準70% + RS30%)")
+        report.append(f"\nRS Rating: {result['rs_rating']:.1f}" if result['rs_rating'] else "\nRS Rating: N/A")
+        report.append(f"RS レベル: {result['rs_level']}")
+        report.append(f"\nステータス: {result['interpretation']['status']}")
         report.append(f"強度: {result['interpretation']['strength']}")
         report.append(f"アクション: {result['interpretation']['action']}")
         
