@@ -23,13 +23,15 @@ class MinerviniTemplateDetector:
     8. RS Rating ≥ 70（理想的には80-90）
     """
     
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, market_cap: float = None):
         """
         Args:
             df: 指標計算済みのDataFrame（日足）
+            market_cap: 時価総額（ドル）
         """
         self.df = df
         self.latest = df.iloc[-1]
+        self.market_cap = market_cap
         
     def check_template(self) -> Dict:
         """
@@ -253,7 +255,117 @@ class MinerviniTemplateDetector:
                 interpretation['strength'] = 'Moderate'
         
         return interpretation
-    
+
+    def check_template_with_additional_criteria(self, min_rs_rating: int = 70) -> Dict:
+        """
+        Minerviniのトレンドテンプレート + Green Candle + Market Cap条件をチェック
+
+        Additional Criteria:
+        - Green Candle: Chg >= 0 (Close >= Open) AND Open Chg >= 0 (Open >= Previous Close)
+        - Market Cap >= $1B
+
+        Args:
+            min_rs_rating: 最小RS Rating (デフォルト: 70)
+
+        Returns:
+            dict: 全ての条件の結果
+        """
+        # 基本的なMinervini基準をチェック
+        base_result = self.check_template()
+
+        # 追加条件のチェック
+        additional_checks = {}
+
+        # Green Candle条件: Chg >= 0 (Close >= Open)
+        current_close = self.latest['Close']
+        current_open = self.latest['Open']
+        chg = current_close - current_open
+
+        additional_checks['green_candle_chg'] = {
+            'passed': chg >= 0,
+            'description': 'Green Candle: Chg >= 0 (Close >= Open)',
+            'values': {
+                'close': current_close,
+                'open': current_open,
+                'chg': chg,
+                'chg_pct': (chg / current_open * 100) if current_open > 0 else 0
+            }
+        }
+
+        # Open Chg >= 0 (Open >= Previous Close)
+        if len(self.df) >= 2:
+            prev_close = self.df['Close'].iloc[-2]
+            open_chg = current_open - prev_close
+            open_chg_passed = open_chg >= 0
+        else:
+            prev_close = None
+            open_chg = None
+            open_chg_passed = False
+
+        additional_checks['green_candle_open_chg'] = {
+            'passed': open_chg_passed,
+            'description': 'Green Candle: Open Chg >= 0 (Open >= Previous Close)',
+            'values': {
+                'open': current_open,
+                'prev_close': prev_close,
+                'open_chg': open_chg,
+                'open_chg_pct': (open_chg / prev_close * 100) if prev_close and prev_close > 0 else 0
+            }
+        }
+
+        # Market Cap >= $1B
+        if self.market_cap is not None:
+            market_cap_passed = self.market_cap >= 1_000_000_000
+            market_cap_billions = self.market_cap / 1_000_000_000
+        else:
+            market_cap_passed = False
+            market_cap_billions = None
+
+        additional_checks['market_cap'] = {
+            'passed': market_cap_passed,
+            'description': 'Market Cap >= $1B',
+            'values': {
+                'market_cap': self.market_cap,
+                'market_cap_billions': market_cap_billions
+            }
+        }
+
+        # RS Rating条件を更新（min_rs_ratingを使用）
+        if 'RS_Rating' in self.df.columns:
+            rs_rating = self.latest['RS_Rating']
+            rs_rating_passed = rs_rating >= min_rs_rating
+        else:
+            rs_rating = None
+            rs_rating_passed = False
+
+        base_result['checks']['criterion_8']['passed'] = rs_rating_passed
+        base_result['checks']['criterion_8']['description'] = f'RS Rating ≥ {min_rs_rating}'
+
+        # 全条件の判定
+        all_base_criteria_met = all(c['passed'] for c in base_result['checks'].values())
+        all_additional_criteria_met = all(c['passed'] for c in additional_checks.values())
+        all_criteria_met = all_base_criteria_met and all_additional_criteria_met
+
+        # 総合スコア
+        total_checks = len(base_result['checks']) + len(additional_checks)
+        criteria_met = sum(1 for c in base_result['checks'].values() if c['passed']) + \
+                       sum(1 for c in additional_checks.values() if c['passed'])
+        total_score = (criteria_met / total_checks) * 100
+
+        return {
+            'all_criteria_met': all_criteria_met,
+            'all_base_criteria_met': all_base_criteria_met,
+            'all_additional_criteria_met': all_additional_criteria_met,
+            'score': total_score,
+            'base_checks': base_result['checks'],
+            'additional_checks': additional_checks,
+            'criteria_met': criteria_met,
+            'total_criteria': total_checks,
+            'base_criteria_met': sum(1 for c in base_result['checks'].values() if c['passed']),
+            'additional_criteria_met': sum(1 for c in additional_checks.values() if c['passed']),
+            'interpretation': base_result['interpretation']
+        }
+
     def get_detailed_report(self) -> str:
         """
         詳細なレポートを生成
@@ -290,7 +402,62 @@ class MinerviniTemplateDetector:
                         report.append(f"      {value_key}: {value:.2f}")
                     else:
                         report.append(f"      {value_key}: {value}")
-        
+
+        return "\n".join(report)
+
+    def get_detailed_report_with_additional_criteria(self, min_rs_rating: int = 70) -> str:
+        """
+        追加条件を含む詳細なレポートを生成
+
+        Args:
+            min_rs_rating: 最小RS Rating
+
+        Returns:
+            str: 詳細レポート
+        """
+        result = self.check_template_with_additional_criteria(min_rs_rating)
+
+        report = []
+        report.append("="*60)
+        report.append("Mark Minervini Enhanced Trend Template 分析")
+        report.append("="*60)
+        report.append(f"\n総合判定: {result['criteria_met']}/{result['total_criteria']} 基準 満たす")
+        report.append(f"  - Base Criteria (Minervini 8): {result['base_criteria_met']}/8")
+        report.append(f"  - Additional Criteria: {result['additional_criteria_met']}/3")
+        report.append(f"スコア: {result['score']:.1f}/100")
+        report.append(f"\n全条件達成: {'✓ YES' if result['all_criteria_met'] else '✗ NO'}")
+        report.append(f"Base基準達成: {'✓ YES' if result['all_base_criteria_met'] else '✗ NO'}")
+        report.append(f"追加基準達成: {'✓ YES' if result['all_additional_criteria_met'] else '✗ NO'}")
+
+        report.append(f"\nMinervini Base基準の詳細:")
+        for i, (key, check) in enumerate(result['base_checks'].items(), 1):
+            status = "✓" if check['passed'] else "✗"
+            report.append(f"  {i}. {status} {check['description']}")
+
+            # 値の詳細表示
+            for value_key, value in check['values'].items():
+                if value is not None:
+                    if isinstance(value, float):
+                        report.append(f"      {value_key}: {value:.2f}")
+                    else:
+                        report.append(f"      {value_key}: {value}")
+
+        report.append(f"\n追加基準の詳細:")
+        for i, (key, check) in enumerate(result['additional_checks'].items(), 1):
+            status = "✓" if check['passed'] else "✗"
+            report.append(f"  {i}. {status} {check['description']}")
+
+            # 値の詳細表示
+            for value_key, value in check['values'].items():
+                if value is not None:
+                    if isinstance(value, float):
+                        if 'billions' in value_key:
+                            report.append(f"      {value_key}: ${value:.2f}B")
+                        else:
+                            report.append(f"      {value_key}: {value:.2f}")
+                    else:
+                        report.append(f"      {value_key}: {value}")
+
         return "\n".join(report)
 
 
