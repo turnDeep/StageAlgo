@@ -320,49 +320,36 @@ class MarketDashboard:
             print(f"Error fetching VIX: {e}")
 
         # 各要因のポジティブ率を計算（total_tickersで正規化）
+        # 各要因を二値（positive/negative）として判定
         if total_tickers > 0:
-            factor_positive_counts = [
-                factors['ytd_positive'],
-                factors['1w_positive'],
-                factors['1m_positive'],
-                factors['1y_positive'],
-                factors['above_90pct_52w'],
-                1 if vix_positive else 0,  # VIXは単一要因
-                factors['above_10ma'],
-                factors['above_20ma'],
-                factors['above_50ma'],
-                factors['above_200ma'],
-                factors['ma_alignment'],
-                factors['ma_uptrend'],
-            ]
+            # 閾値：過半数（50%以上）でpositive
+            threshold = 0.5
 
-            # ポジティブな要因の数を合計
-            # 最初の5要因とMA6要因は比率で、VIXは絶対値
-            # ポジティブ率 = (各要因の達成度の合計) / 12
-            # 各要因の達成度 = (ポジティブなティッカー数 / 総ティッカー数) ただしVIXは0or1
+            # 各要因がpositiveかどうかを判定（0 or 1）
+            factor_results = {
+                'ytd_positive': 1 if (factors['ytd_positive'] / total_tickers) >= threshold else 0,
+                '1w_positive': 1 if (factors['1w_positive'] / total_tickers) >= threshold else 0,
+                '1m_positive': 1 if (factors['1m_positive'] / total_tickers) >= threshold else 0,
+                '1y_positive': 1 if (factors['1y_positive'] / total_tickers) >= threshold else 0,
+                'above_90pct_52w': 1 if (factors['above_90pct_52w'] / total_tickers) >= threshold else 0,
+                'vix_positive': 1 if vix_positive else 0,
+                'above_10ma': 1 if (factors['above_10ma'] / total_tickers) >= threshold else 0,
+                'above_20ma': 1 if (factors['above_20ma'] / total_tickers) >= threshold else 0,
+                'above_50ma': 1 if (factors['above_50ma'] / total_tickers) >= threshold else 0,
+                'above_200ma': 1 if (factors['above_200ma'] / total_tickers) >= threshold else 0,
+                'ma_alignment': 1 if (factors['ma_alignment'] / total_tickers) >= threshold else 0,
+                'ma_uptrend': 1 if (factors['ma_uptrend'] / total_tickers) >= threshold else 0,
+            }
 
-            positive_count = 0
-            # パフォーマンス要因（4つ）
-            positive_count += (factors['ytd_positive'] / total_tickers)
-            positive_count += (factors['1w_positive'] / total_tickers)
-            positive_count += (factors['1m_positive'] / total_tickers)
-            positive_count += (factors['1y_positive'] / total_tickers)
-            # 52週高値要因（1つ）
-            positive_count += (factors['above_90pct_52w'] / total_tickers)
-            # VIX要因（1つ）
-            positive_count += (1 if vix_positive else 0)
-            # MA要因（6つ）
-            positive_count += (factors['above_10ma'] / total_tickers)
-            positive_count += (factors['above_20ma'] / total_tickers)
-            positive_count += (factors['above_50ma'] / total_tickers)
-            positive_count += (factors['above_200ma'] / total_tickers)
-            positive_count += (factors['ma_alignment'] / total_tickers)
-            positive_count += (factors['ma_uptrend'] / total_tickers)
+            # ポジティブな要因の数を合計（12要因中何個がpositive）
+            positive_count = sum(factor_results.values())
 
             # ポジティブ率（0-100%）
             positive_ratio = (positive_count / 12) * 100
         else:
             positive_ratio = 0
+            positive_count = 0
+            factor_results = {}
 
         # レベル判定
         if positive_ratio >= 80:
@@ -379,32 +366,80 @@ class MarketDashboard:
         return {
             'score': positive_ratio,
             'level': level,
+            'positive_count': int(positive_count) if total_tickers > 0 else 0,
+            'total_factors': 12,
             'factors': factors,
+            'factor_results': factor_results if total_tickers > 0 else {},
             'vix_level': vix_level,
             'vix_positive': vix_positive,
             'total_tickers': total_tickers,
             'ticker_details': ticker_details,
             'factor_breakdown': {
                 'performance': {
-                    'ytd_positive': f"{factors['ytd_positive']}/{total_tickers}",
-                    '1w_positive': f"{factors['1w_positive']}/{total_tickers}",
-                    '1m_positive': f"{factors['1m_positive']}/{total_tickers}",
-                    '1y_positive': f"{factors['1y_positive']}/{total_tickers}",
+                    'ytd_positive': {
+                        'count': f"{factors['ytd_positive']}/{total_tickers}",
+                        'ratio': f"{(factors['ytd_positive'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('ytd_positive', 0)) if total_tickers > 0 else False
+                    },
+                    '1w_positive': {
+                        'count': f"{factors['1w_positive']}/{total_tickers}",
+                        'ratio': f"{(factors['1w_positive'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('1w_positive', 0)) if total_tickers > 0 else False
+                    },
+                    '1m_positive': {
+                        'count': f"{factors['1m_positive']}/{total_tickers}",
+                        'ratio': f"{(factors['1m_positive'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('1m_positive', 0)) if total_tickers > 0 else False
+                    },
+                    '1y_positive': {
+                        'count': f"{factors['1y_positive']}/{total_tickers}",
+                        'ratio': f"{(factors['1y_positive'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('1y_positive', 0)) if total_tickers > 0 else False
+                    },
                 },
                 '52w_high': {
-                    'above_90pct': f"{factors['above_90pct_52w']}/{total_tickers}",
+                    'above_90pct': {
+                        'count': f"{factors['above_90pct_52w']}/{total_tickers}",
+                        'ratio': f"{(factors['above_90pct_52w'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('above_90pct_52w', 0)) if total_tickers > 0 else False
+                    },
                 },
                 'vix': {
                     'below_20': vix_positive,
                     'level': vix_level,
+                    'is_positive': bool(factor_results.get('vix_positive', 0)) if total_tickers > 0 else False
                 },
                 'moving_averages': {
-                    'above_10ma': f"{factors['above_10ma']}/{total_tickers}",
-                    'above_20ma': f"{factors['above_20ma']}/{total_tickers}",
-                    'above_50ma': f"{factors['above_50ma']}/{total_tickers}",
-                    'above_200ma': f"{factors['above_200ma']}/{total_tickers}",
-                    'ma_alignment': f"{factors['ma_alignment']}/{total_tickers}",
-                    'ma_uptrend': f"{factors['ma_uptrend']}/{total_tickers}",
+                    'above_10ma': {
+                        'count': f"{factors['above_10ma']}/{total_tickers}",
+                        'ratio': f"{(factors['above_10ma'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('above_10ma', 0)) if total_tickers > 0 else False
+                    },
+                    'above_20ma': {
+                        'count': f"{factors['above_20ma']}/{total_tickers}",
+                        'ratio': f"{(factors['above_20ma'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('above_20ma', 0)) if total_tickers > 0 else False
+                    },
+                    'above_50ma': {
+                        'count': f"{factors['above_50ma']}/{total_tickers}",
+                        'ratio': f"{(factors['above_50ma'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('above_50ma', 0)) if total_tickers > 0 else False
+                    },
+                    'above_200ma': {
+                        'count': f"{factors['above_200ma']}/{total_tickers}",
+                        'ratio': f"{(factors['above_200ma'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('above_200ma', 0)) if total_tickers > 0 else False
+                    },
+                    'ma_alignment': {
+                        'count': f"{factors['ma_alignment']}/{total_tickers}",
+                        'ratio': f"{(factors['ma_alignment'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('ma_alignment', 0)) if total_tickers > 0 else False
+                    },
+                    'ma_uptrend': {
+                        'count': f"{factors['ma_uptrend']}/{total_tickers}",
+                        'ratio': f"{(factors['ma_uptrend'] / total_tickers * 100):.1f}%",
+                        'is_positive': bool(factor_results.get('ma_uptrend', 0)) if total_tickers > 0 else False
+                    },
                 }
             }
         }
@@ -713,21 +748,26 @@ class MarketDashboard:
         exposure = self.calculate_market_exposure()
         print(f"Score: {exposure['score']:.2f}%")
         print(f"Level: {exposure['level']}")
+        print(f"Positive Factors: {exposure.get('positive_count', 0)}/{exposure.get('total_factors', 12)}")
         print(f"Total Tickers Evaluated: {exposure.get('total_tickers', 0)}")
-        print(f"\n要因内訳:")
+        print(f"\n要因内訳 (✓=Positive, ✗=Negative):")
         print(f"  パフォーマンス評価:")
         for key, val in exposure['factor_breakdown']['performance'].items():
-            print(f"    - {key}: {val}")
+            status = "✓" if val['is_positive'] else "✗"
+            print(f"    {status} {key}: {val['count']} ({val['ratio']})")
         print(f"  52週高値:")
         for key, val in exposure['factor_breakdown']['52w_high'].items():
-            print(f"    - {key}: {val}")
+            status = "✓" if val['is_positive'] else "✗"
+            print(f"    {status} {key}: {val['count']} ({val['ratio']})")
         print(f"  VIX:")
         vix_info = exposure['factor_breakdown']['vix']
-        print(f"    - below_20: {vix_info['below_20']}")
+        vix_status = "✓" if vix_info['is_positive'] else "✗"
+        print(f"    {vix_status} below_20: {vix_info['below_20']}")
         print(f"    - current_level: {vix_info['level']:.2f}" if vix_info['level'] else "    - current_level: N/A")
         print(f"  移動平均線:")
         for key, val in exposure['factor_breakdown']['moving_averages'].items():
-            print(f"    - {key}: {val}")
+            status = "✓" if val['is_positive'] else "✗"
+            print(f"    {status} {key}: {val['count']} ({val['ratio']})")
 
         # 2. Market Performance Overview
         print("\n### MARKET PERFORMANCE OVERVIEW ###")
