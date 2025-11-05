@@ -2,19 +2,20 @@
 """
 Market Dashboard Generator
 マーケットダッシュボードを再現
+
+yfinanceからFinancialModelingPrep APIに移行しました。
 """
 
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from curl_cffi.requests import Session
 from typing import Dict, List, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
 
 # StageAlgoの既存モジュールをインポート
 from data_fetcher import fetch_stock_data
+from fmp_data_fetcher import FMPDataFetcher
 from indicators import calculate_all_basic_indicators
 from rs_calculator import RSCalculator
 from stage_detector import StageDetector
@@ -36,7 +37,7 @@ class MarketDashboard:
     """
 
     def __init__(self, enable_screeners: bool = True):
-        self.session = Session(impersonate="chrome110")
+        self.fmp_fetcher = FMPDataFetcher()
         self.current_date = datetime.now()
         self.enable_screeners = enable_screeners
 
@@ -75,6 +76,7 @@ class MarketDashboard:
     def fetch_ticker_data(self, ticker: str, period: str = '2y', interval: str = '1d') -> pd.DataFrame:
         """
         ティッカーデータを取得（キャッシュ付き）
+        FMP APIを使用
         """
         cache_key = f"{ticker}_{period}_{interval}"
 
@@ -82,13 +84,20 @@ class MarketDashboard:
             return self.data_cache[cache_key]
 
         try:
-            data = yf.download(
-                ticker,
-                period=period,
-                interval=interval,
-                session=self.session,
-                progress=False
-            )
+            # 期間を日数に変換
+            period_days = {
+                '1mo': 30,
+                '3mo': 90,
+                '6mo': 180,
+                '1y': 365,
+                '2y': 730,
+                '5y': 1825,
+            }
+            days = period_days.get(period, 730)  # デフォルト2年
+            from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            to_date = datetime.now().strftime('%Y-%m-%d')
+
+            data = self.fmp_fetcher.get_historical_price(ticker, from_date, to_date)
 
             if not data.empty:
                 self.data_cache[cache_key] = data

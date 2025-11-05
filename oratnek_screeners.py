@@ -9,16 +9,17 @@ IBD (Investor's Business Daily) 手法に基づく6つのスクリーニング�
 4. Top 2% RS Rating - RS Rating上位2%かつトレンドが完璧
 5. 4% Bullish Yesterday - 昨日4%以上上昇
 6. Healthy Chart Watch List - 健全なチャート形状を持つ高品質銘柄
+
+yfinanceからFinancialModelingPrep APIに移行しました。
 """
 
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
-import yfinance as yf
-from curl_cffi.requests import Session
 
 from data_fetcher import fetch_stock_data
+from fmp_data_fetcher import FMPDataFetcher
 from indicators import calculate_all_basic_indicators
 from rs_calculator import RSCalculator
 
