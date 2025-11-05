@@ -12,11 +12,11 @@ FMP Starter Planの制限:
 """
 
 import os
-import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import time
+from curl_cffi.requests import Session, errors
 
 
 class FMPDataFetcher:
@@ -41,10 +41,25 @@ class FMPDataFetcher:
 
         # データキャッシュ
         self.cache = {}
+        self.session = Session(impersonate="chrome110")
+        self.request_timestamps = []
+
+    def _enforce_rate_limit(self):
+        """Enforce the rate limit of 300 requests per minute."""
+        current_time = time.time()
+        # Remove timestamps older than 60 seconds
+        self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
+        if len(self.request_timestamps) >= 300:
+            # Sleep until the oldest request is older than 60 seconds
+            time.sleep(60 - (current_time - self.request_timestamps[0]))
+            # Trim the list again after sleeping
+            current_time = time.time()
+            self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
+        self.request_timestamps.append(current_time)
 
     def _make_request(self, url: str, params: Optional[Dict] = None) -> Dict:
         """
-        Make API request with error handling
+        Make API request with error handling and rate limiting.
 
         Args:
             url: API endpoint URL
@@ -53,16 +68,17 @@ class FMPDataFetcher:
         Returns:
             JSON response as dict
         """
+        self._enforce_rate_limit()
         if params is None:
             params = {}
 
         params['apikey'] = self.api_key
 
         try:
-            response = requests.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.RequestException as e:
+        except errors.RequestsError as e:
             print(f"API request failed: {e}")
             return {}
 

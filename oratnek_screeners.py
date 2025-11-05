@@ -185,7 +185,6 @@ class OratnekScreener:
             tickers: スクリーニング対象の銘柄リスト
         """
         self.tickers = tickers
-        self.session = Session(impersonate="chrome110")
         self.data_cache = {}
         self.benchmark_data = None
 
