@@ -102,107 +102,302 @@ class MarketDashboard:
         """
         Market Exposure (市場エクスポージャー) を計算
 
-        ルール:
-        - 100%: Bullish (強気)
-        - 60-100%: Positive (ポジティブ)
-        - 20-60%: Neutral (中立)
-        - -20-20%: Negative (ネガティブ)
-        - -60-(-20)%: Bearish (弱気)
-        - -60%以下: Extreme Bearish (超弱気)
+        12要因評価方式:
+        1. パフォーマンス評価（4要因）:
+           - YTD > 0のindex/sector数
+           - 1W > 0のindex/sector数
+           - 1M > 0のindex/sector数
+           - 1Y > 0のindex/sector数
+        2. 52週高値からの位置（1要因）:
+           - 52週高値の90%以上にあるindex/sector数
+        3. VIX状態（1要因）:
+           - VIX < 20
+        4. 移動平均線の状態（6要因）:
+           - 10MA以上のindex/sector数
+           - 20MA以上のindex/sector数
+           - 50MA以上のindex/sector数
+           - 200MA以上のindex/sector数
+           - MA順序が正しい数(10>20>50>200)
+           - 全MA上昇トレンドの数
 
-        計算方法:
-        - SPY, QQQ, IWMのステージを判定
-        - Stage 2 = +30%, Stage 1 = +10%, Stage 3 = -10%, Stage 4 = -30%
-        - VIXレベルで調整
-        - Market Breadthで調整
+        スコアリング:
+        - Positive_Ratio = (Positive_Count / 12) * 100
+        - 80%以上: Bullish
+        - 60-80%: Positive
+        - 40-60%: Neutral
+        - 20-40%: Negative
+        - 0-20%: Bearish
         """
-        exposure_score = 0
-        stage_weights = {}
+        # 評価対象：主要指数 + セクターETF
+        all_tickers = list(self.major_indices.keys()) + list(self.sectors.keys())
 
-        # 主要指数のステージ判定
-        for ticker in ['SPY', 'QQQ', 'IWM']:
+        # 各要因のカウンター
+        factors = {
+            'ytd_positive': 0,
+            '1w_positive': 0,
+            '1m_positive': 0,
+            '1y_positive': 0,
+            'above_90pct_52w': 0,
+            'above_10ma': 0,
+            'above_20ma': 0,
+            'above_50ma': 0,
+            'above_200ma': 0,
+            'ma_alignment': 0,
+            'ma_uptrend': 0,
+        }
+
+        total_tickers = len(all_tickers)
+        ticker_details = {}
+
+        # 各ティッカーを評価
+        for ticker in all_tickers:
             try:
-                df, benchmark_df = fetch_stock_data(ticker, period='2y')
-                if df is None or len(df) < 252:
+                df = self.fetch_ticker_data(ticker, period='2y', interval='1d')
+                if df.empty or len(df) < 252:
                     continue
 
+                # 基本指標を計算
                 indicators_df = calculate_all_basic_indicators(df)
-
-                # ベンチマークがNoneの場合はSPYを使用
-                if benchmark_df is None:
-                    benchmark_df, _ = fetch_stock_data('SPY', period='2y')
-                    if benchmark_df is not None:
-                        benchmark_df = calculate_all_basic_indicators(benchmark_df)
-                else:
-                    benchmark_df = calculate_all_basic_indicators(benchmark_df)
-
-                if benchmark_df is None:
+                if len(indicators_df) < 252:
                     continue
 
-                detector = StageDetector(indicators_df, benchmark_df)
-                stage = detector.determine_stage()
+                latest = indicators_df.iloc[-1]
+                current_price = latest['Close']
 
-                stage_weights[ticker] = stage
+                # 追加のMA計算（10MA, 20MA）
+                sma_10 = indicators_df['Close'].rolling(window=10, min_periods=10).mean().iloc[-1]
+                sma_20 = indicators_df['Close'].rolling(window=20, min_periods=20).mean().iloc[-1]
+                sma_50 = latest['SMA_50']
+                sma_200 = latest['SMA_200']
 
-                # ステージに応じたスコア
-                if stage == 2:
-                    exposure_score += 30
-                elif stage == 1:
-                    exposure_score += 10
-                elif stage == 3:
-                    exposure_score -= 10
-                elif stage == 4:
-                    exposure_score -= 30
+                ticker_factors = {}
+
+                # 1. パフォーマンス評価（4要因）
+                # YTD
+                ytd_start = indicators_df.loc[indicators_df.index >= f"{self.current_date.year}-01-01"]
+                if len(ytd_start) > 0:
+                    ytd_price = ytd_start['Close'].iloc[0]
+                    ytd_pct = ((current_price - ytd_price) / ytd_price) * 100
+                    if ytd_pct > 0:
+                        factors['ytd_positive'] += 1
+                        ticker_factors['ytd'] = True
+                    else:
+                        ticker_factors['ytd'] = False
+                else:
+                    ticker_factors['ytd'] = False
+
+                # 1W
+                if len(indicators_df) >= 5:
+                    week_ago_price = indicators_df['Close'].iloc[-5]
+                    week_pct = ((current_price - week_ago_price) / week_ago_price) * 100
+                    if week_pct > 0:
+                        factors['1w_positive'] += 1
+                        ticker_factors['1w'] = True
+                    else:
+                        ticker_factors['1w'] = False
+                else:
+                    ticker_factors['1w'] = False
+
+                # 1M
+                if len(indicators_df) >= 21:
+                    month_ago_price = indicators_df['Close'].iloc[-21]
+                    month_pct = ((current_price - month_ago_price) / month_ago_price) * 100
+                    if month_pct > 0:
+                        factors['1m_positive'] += 1
+                        ticker_factors['1m'] = True
+                    else:
+                        ticker_factors['1m'] = False
+                else:
+                    ticker_factors['1m'] = False
+
+                # 1Y
+                if len(indicators_df) >= 252:
+                    year_ago_price = indicators_df['Close'].iloc[-252]
+                    year_pct = ((current_price - year_ago_price) / year_ago_price) * 100
+                    if year_pct > 0:
+                        factors['1y_positive'] += 1
+                        ticker_factors['1y'] = True
+                    else:
+                        ticker_factors['1y'] = False
+                else:
+                    ticker_factors['1y'] = False
+
+                # 2. 52週高値からの位置（1要因）
+                high_52w = latest['High_52W']
+                if not pd.isna(high_52w) and current_price >= high_52w * 0.90:
+                    factors['above_90pct_52w'] += 1
+                    ticker_factors['above_90pct_52w'] = True
+                else:
+                    ticker_factors['above_90pct_52w'] = False
+
+                # 4. 移動平均線の状態（6要因）
+                # 10MA以上
+                if not pd.isna(sma_10) and current_price >= sma_10:
+                    factors['above_10ma'] += 1
+                    ticker_factors['above_10ma'] = True
+                else:
+                    ticker_factors['above_10ma'] = False
+
+                # 20MA以上
+                if not pd.isna(sma_20) and current_price >= sma_20:
+                    factors['above_20ma'] += 1
+                    ticker_factors['above_20ma'] = True
+                else:
+                    ticker_factors['above_20ma'] = False
+
+                # 50MA以上
+                if not pd.isna(sma_50) and current_price >= sma_50:
+                    factors['above_50ma'] += 1
+                    ticker_factors['above_50ma'] = True
+                else:
+                    ticker_factors['above_50ma'] = False
+
+                # 200MA以上
+                if not pd.isna(sma_200) and current_price >= sma_200:
+                    factors['above_200ma'] += 1
+                    ticker_factors['above_200ma'] = True
+                else:
+                    ticker_factors['above_200ma'] = False
+
+                # MA順序が正しい（10>20>50>200）
+                if (not pd.isna(sma_10) and not pd.isna(sma_20) and
+                    not pd.isna(sma_50) and not pd.isna(sma_200) and
+                    sma_10 > sma_20 > sma_50 > sma_200):
+                    factors['ma_alignment'] += 1
+                    ticker_factors['ma_alignment'] = True
+                else:
+                    ticker_factors['ma_alignment'] = False
+
+                # 全MA上昇トレンド
+                # 各MAの傾きを確認（簡易版：最新5日の平均と5日前の平均を比較）
+                if len(indicators_df) >= 10:
+                    sma_10_series = indicators_df['Close'].rolling(window=10, min_periods=10).mean()
+                    sma_20_series = indicators_df['Close'].rolling(window=20, min_periods=20).mean()
+                    sma_50_series = indicators_df['SMA_50']
+                    sma_200_series = indicators_df['SMA_200']
+
+                    ma_uptrend = True
+                    for ma_series in [sma_10_series, sma_20_series, sma_50_series, sma_200_series]:
+                        if pd.isna(ma_series.iloc[-1]) or pd.isna(ma_series.iloc[-5]):
+                            ma_uptrend = False
+                            break
+                        if ma_series.iloc[-1] <= ma_series.iloc[-5]:
+                            ma_uptrend = False
+                            break
+
+                    if ma_uptrend:
+                        factors['ma_uptrend'] += 1
+                        ticker_factors['ma_uptrend'] = True
+                    else:
+                        ticker_factors['ma_uptrend'] = False
+                else:
+                    ticker_factors['ma_uptrend'] = False
+
+                ticker_details[ticker] = ticker_factors
+
             except Exception as e:
                 print(f"Error processing {ticker}: {e}")
                 continue
 
-        # VIXで調整
+        # 3. VIX状態（1要因）
         vix_level = None
+        vix_positive = False
         try:
             vix_data = self.fetch_ticker_data(self.vix_ticker, period='1mo', interval='1d')
             if not vix_data.empty:
                 vix_level = vix_data['Close'].iloc[-1]
-
-                if vix_level < 15:
-                    exposure_score += 10  # 低VIX = 安定
-                elif vix_level > 30:
-                    exposure_score -= 20  # 高VIX = 恐怖
+                vix_positive = vix_level < 20
         except Exception as e:
             print(f"Error fetching VIX: {e}")
 
-        # Market Breadthで調整（簡易版：SPYの上昇株/下落株比率）
-        try:
-            spy_components = self.calculate_market_breadth('SPY')
-            if spy_components['advance_decline_ratio'] > 1.5:
-                exposure_score += 10
-            elif spy_components['advance_decline_ratio'] < 0.67:
-                exposure_score -= 10
-        except Exception as e:
-            print(f"Error calculating market breadth: {e}")
+        # 各要因のポジティブ率を計算（total_tickersで正規化）
+        if total_tickers > 0:
+            factor_positive_counts = [
+                factors['ytd_positive'],
+                factors['1w_positive'],
+                factors['1m_positive'],
+                factors['1y_positive'],
+                factors['above_90pct_52w'],
+                1 if vix_positive else 0,  # VIXは単一要因
+                factors['above_10ma'],
+                factors['above_20ma'],
+                factors['above_50ma'],
+                factors['above_200ma'],
+                factors['ma_alignment'],
+                factors['ma_uptrend'],
+            ]
 
-        # スコアを-60〜100に正規化
-        exposure_score = max(-60, min(100, exposure_score))
+            # ポジティブな要因の数を合計
+            # 最初の5要因とMA6要因は比率で、VIXは絶対値
+            # ポジティブ率 = (各要因の達成度の合計) / 12
+            # 各要因の達成度 = (ポジティブなティッカー数 / 総ティッカー数) ただしVIXは0or1
+
+            positive_count = 0
+            # パフォーマンス要因（4つ）
+            positive_count += (factors['ytd_positive'] / total_tickers)
+            positive_count += (factors['1w_positive'] / total_tickers)
+            positive_count += (factors['1m_positive'] / total_tickers)
+            positive_count += (factors['1y_positive'] / total_tickers)
+            # 52週高値要因（1つ）
+            positive_count += (factors['above_90pct_52w'] / total_tickers)
+            # VIX要因（1つ）
+            positive_count += (1 if vix_positive else 0)
+            # MA要因（6つ）
+            positive_count += (factors['above_10ma'] / total_tickers)
+            positive_count += (factors['above_20ma'] / total_tickers)
+            positive_count += (factors['above_50ma'] / total_tickers)
+            positive_count += (factors['above_200ma'] / total_tickers)
+            positive_count += (factors['ma_alignment'] / total_tickers)
+            positive_count += (factors['ma_uptrend'] / total_tickers)
+
+            # ポジティブ率（0-100%）
+            positive_ratio = (positive_count / 12) * 100
+        else:
+            positive_ratio = 0
 
         # レベル判定
-        if exposure_score >= 80:
+        if positive_ratio >= 80:
             level = 'Bullish'
-        elif exposure_score >= 60:
+        elif positive_ratio >= 60:
             level = 'Positive'
-        elif exposure_score >= 20:
+        elif positive_ratio >= 40:
             level = 'Neutral'
-        elif exposure_score >= -20:
+        elif positive_ratio >= 20:
             level = 'Negative'
-        elif exposure_score >= -60:
-            level = 'Bearish'
         else:
-            level = 'Extreme Bearish'
+            level = 'Bearish'
 
         return {
-            'score': exposure_score,
+            'score': positive_ratio,
             'level': level,
-            'stage_weights': stage_weights,
-            'vix_level': vix_level
+            'factors': factors,
+            'vix_level': vix_level,
+            'vix_positive': vix_positive,
+            'total_tickers': total_tickers,
+            'ticker_details': ticker_details,
+            'factor_breakdown': {
+                'performance': {
+                    'ytd_positive': f"{factors['ytd_positive']}/{total_tickers}",
+                    '1w_positive': f"{factors['1w_positive']}/{total_tickers}",
+                    '1m_positive': f"{factors['1m_positive']}/{total_tickers}",
+                    '1y_positive': f"{factors['1y_positive']}/{total_tickers}",
+                },
+                '52w_high': {
+                    'above_90pct': f"{factors['above_90pct_52w']}/{total_tickers}",
+                },
+                'vix': {
+                    'below_20': vix_positive,
+                    'level': vix_level,
+                },
+                'moving_averages': {
+                    'above_10ma': f"{factors['above_10ma']}/{total_tickers}",
+                    'above_20ma': f"{factors['above_20ma']}/{total_tickers}",
+                    'above_50ma': f"{factors['above_50ma']}/{total_tickers}",
+                    'above_200ma': f"{factors['above_200ma']}/{total_tickers}",
+                    'ma_alignment': f"{factors['ma_alignment']}/{total_tickers}",
+                    'ma_uptrend': f"{factors['ma_uptrend']}/{total_tickers}",
+                }
+            }
         }
 
     def calculate_market_breadth(self, index_ticker: str = 'SPY') -> Dict:
@@ -497,12 +692,25 @@ class MarketDashboard:
         print("=" * 80)
 
         # 1. Market Exposure
-        print("\n### MARKET EXPOSURE ###")
+        print("\n### MARKET EXPOSURE (12要因評価) ###")
         exposure = self.calculate_market_exposure()
-        print(f"Score: {exposure['score']}%")
+        print(f"Score: {exposure['score']:.2f}%")
         print(f"Level: {exposure['level']}")
-        print(f"VIX: {exposure.get('vix_level', 'N/A')}")
-        print(f"Stage Weights: {exposure.get('stage_weights', {})}")
+        print(f"Total Tickers Evaluated: {exposure.get('total_tickers', 0)}")
+        print(f"\n要因内訳:")
+        print(f"  パフォーマンス評価:")
+        for key, val in exposure['factor_breakdown']['performance'].items():
+            print(f"    - {key}: {val}")
+        print(f"  52週高値:")
+        for key, val in exposure['factor_breakdown']['52w_high'].items():
+            print(f"    - {key}: {val}")
+        print(f"  VIX:")
+        vix_info = exposure['factor_breakdown']['vix']
+        print(f"    - below_20: {vix_info['below_20']}")
+        print(f"    - current_level: {vix_info['level']:.2f}" if vix_info['level'] else "    - current_level: N/A")
+        print(f"  移動平均線:")
+        for key, val in exposure['factor_breakdown']['moving_averages'].items():
+            print(f"    - {key}: {val}")
 
         # 2. Market Performance Overview
         print("\n### MARKET PERFORMANCE OVERVIEW ###")
