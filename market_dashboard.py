@@ -18,6 +18,7 @@ from data_fetcher import fetch_stock_data
 from indicators import calculate_all_basic_indicators
 from rs_calculator import RSCalculator
 from stage_detector import StageDetector
+from oratnek_screeners import OratnekScreener, get_default_tickers
 
 
 class MarketDashboard:
@@ -34,9 +35,10 @@ class MarketDashboard:
     - RS Rating Lists
     """
 
-    def __init__(self):
+    def __init__(self, enable_screeners: bool = True):
         self.session = Session(impersonate="chrome110")
         self.current_date = datetime.now()
+        self.enable_screeners = enable_screeners
 
         # 主要指数のティッカー
         self.major_indices = {
@@ -66,6 +68,9 @@ class MarketDashboard:
 
         # データキャッシュ
         self.data_cache = {}
+
+        # スクリーニング対象銘柄
+        self.screening_tickers = get_default_tickers()
 
     def fetch_ticker_data(self, ticker: str, period: str = '2y', interval: str = '1d') -> pd.DataFrame:
         """
@@ -460,6 +465,28 @@ class MarketDashboard:
 
         return pd.DataFrame(results)
 
+    def run_oratnek_screeners(self) -> Dict:
+        """
+        Oratnek式スクリーニングを実行
+
+        Returns:
+            スクリーニング結果の辞書
+        """
+        if not self.enable_screeners:
+            print("\n[INFO] Screeners are disabled. Skipping...")
+            return {}
+
+        print("\n### ORATNEK SCREENERS ###")
+        print("Running 6 screening lists...")
+
+        try:
+            screener = OratnekScreener(self.screening_tickers)
+            results = screener.run_all_screens()
+            return results
+        except Exception as e:
+            print(f"Error running screeners: {e}")
+            return {}
+
     def generate_dashboard(self, output_file: str = 'market_dashboard_output.txt'):
         """
         ダッシュボードを生成してファイルに出力
@@ -513,11 +540,27 @@ class MarketDashboard:
         print(f"150MA Above 200MA: {power_law.get('50ma_above_200ma_pct', 0):.1f}%")
         print(f"Total stocks analyzed: {power_law.get('total', 0)}")
 
+        # 6. Oratnek Screeners（追加）
+        screener_results = self.run_oratnek_screeners()
+
+        # スクリーニング結果を表示
+        if screener_results:
+            print("\n### SCREENING RESULTS ###")
+            for name, df in screener_results.items():
+                print(f"\n{name.upper().replace('_', ' ')}:")
+                if not df.empty:
+                    # 上位5銘柄を表示
+                    display_df = df.head(5)
+                    print(display_df.to_string(index=False))
+                    print(f"  ... and {max(0, len(df) - 5)} more stocks")
+                else:
+                    print("  No stocks found")
+
         print("\n" + "=" * 80)
         print("Dashboard generation complete!")
         print("=" * 80)
 
-        return exposure, performance, vix, sectors, power_law
+        return exposure, performance, vix, sectors, power_law, screener_results
 
 
 def main():

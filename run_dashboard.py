@@ -18,13 +18,13 @@ def main():
     print("\nCalculating market metrics...")
 
     # データ収集とダッシュボード生成
-    exposure, performance, vix, sectors, power_law = dashboard.generate_dashboard()
+    exposure, performance, vix, sectors, power_law, screener_results = dashboard.generate_dashboard()
 
     # HTML生成
     print("\nGenerating HTML dashboard...")
     visualizer = DashboardVisualizer()
     html_content = visualizer.generate_html_dashboard(
-        exposure, performance, vix, sectors, power_law
+        exposure, performance, vix, sectors, power_law, screener_results
     )
 
     visualizer.save_html(html_content, 'market_dashboard.html')

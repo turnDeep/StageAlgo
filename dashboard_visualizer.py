@@ -32,7 +32,8 @@ class DashboardVisualizer:
                                 performance: pd.DataFrame,
                                 vix: Dict,
                                 sectors: pd.DataFrame,
-                                power_law: Dict) -> str:
+                                power_law: Dict,
+                                screener_results: Dict = None) -> str:
         """
         HTMLダッシュボードを生成
         """
@@ -248,6 +249,81 @@ class DashboardVisualizer:
                 </div>
             </div>
         </div>
+"""
+
+        # スクリーニング結果セクションを追加
+        if screener_results:
+            screener_names = {
+                'momentum_97': 'Momentum 97',
+                'explosive_eps': 'Explosive EPS Growth',
+                'up_on_volume': 'Up on Volume',
+                'top_2_rs': 'Top 2% RS Rating',
+                'bullish_4pct': '4% Bullish Yesterday',
+                'healthy_chart': 'Healthy Chart Watch List'
+            }
+
+            html += """
+        <!-- Oratnek Screeners -->
+        <div class="section">
+            <div class="section-title">🎯 Oratnek Screeners - IBD Style Stock Lists</div>
+            <div style="margin-bottom: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff; border-radius: 5px;">
+                <strong>About Oratnek Screeners:</strong><br>
+                これらのスクリーニングリストは、Investor's Business Daily (IBD) の手法に基づいています。<br>
+                強力なモメンタム、機関投資家の蓄積、健全なチャート形状を持つ銘柄を特定します。
+            </div>
+"""
+
+            for key, name in screener_names.items():
+                if key in screener_results:
+                    df = screener_results[key]
+
+                    html += f"""
+            <div style="margin-bottom: 30px;">
+                <h3 style="color: #007bff; margin-bottom: 10px;">📈 {name}</h3>
+                <div style="margin-bottom: 10px;">
+                    <span style="background-color: #28a745; color: white; padding: 5px 10px; border-radius: 5px; font-weight: bold;">
+                        {len(df)} stocks found
+                    </span>
+                </div>
+"""
+
+                    if not df.empty:
+                        # データフレームをHTMLテーブルに変換（上位10件のみ表示）
+                        display_df = df.head(10).copy()
+
+                        # 数値列のフォーマット
+                        for col in display_df.columns:
+                            if 'pct' in col.lower() or '%' in col:
+                                display_df[col] = display_df[col].apply(lambda x: f'{x:.2f}%')
+                            elif 'price' in col.lower():
+                                display_df[col] = display_df[col].apply(lambda x: f'${x:.2f}')
+                            elif 'rating' in col.lower():
+                                display_df[col] = display_df[col].apply(lambda x: f'{x:.1f}' if isinstance(x, (int, float)) else x)
+                            elif 'volume' in col.lower():
+                                display_df[col] = display_df[col].apply(lambda x: f'{x:,.0f}' if isinstance(x, (int, float)) else x)
+
+                        html += display_df.to_html(index=False, escape=False)
+
+                        if len(df) > 10:
+                            html += f"""
+                <p style="color: #666; font-style: italic; margin-top: 10px;">
+                    ... and {len(df) - 10} more stocks
+                </p>
+"""
+                    else:
+                        html += """
+                <p style="color: #999; font-style: italic;">No stocks found matching the criteria</p>
+"""
+
+                    html += """
+            </div>
+"""
+
+            html += """
+        </div>
+"""
+
+        html += """
     </div>
 </body>
 </html>
