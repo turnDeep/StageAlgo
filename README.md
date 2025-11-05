@@ -101,6 +101,67 @@ stagealgo-screener --input stagealgo/data/stock.csv --output results/
 stagealgo-dashboard
 ```
 
+### Market DashboardのHTML生成
+
+Market Dashboardは、市場全体の状況を視覚的に把握するための総合的なダッシュボードです。以下の手順でHTMLファイルを生成できます。
+
+#### 機能概要
+
+Market Dashboardには以下の情報が含まれます：
+
+- **Market Exposure**: 12要因評価による市場エクスポージャースコア（Bullish/Positive/Neutral/Negative/Bearish）
+- **Market Performance Overview**: 主要指数（SPY、QQQ、IWM、DIA）のパフォーマンス（YTD、1W、1M、1Y、52週高値からの距離）
+- **VIX Analysis**: VIXレベルと市場の恐怖指数の解釈
+- **Sector Performance**: 全11セクターETFのパフォーマンスとRS Rating
+- **Power Law Indicators**: 移動平均線に基づくテクニカル指標
+- **Oratnek Screeners**: IBDスタイルの6つのスクリーニングリスト
+
+#### 実行方法
+
+**Python スクリプトで実行**:
+
+```bash
+# リポジトリのルートディレクトリで実行
+python run_dashboard.py
+```
+
+このコマンドを実行すると、以下の処理が自動的に行われます：
+
+1. 主要指数とセクターETFのデータを取得
+2. Market Exposure（12要因評価）を計算
+3. VIX分析を実行
+4. セクターパフォーマンスを分析
+5. Power Law Indicatorsを計算
+6. Oratnekスクリーニングを実行（6つのリスト）
+7. HTMLダッシュボードを生成して `market_dashboard.html` として保存
+
+**生成されるファイル**:
+
+- `market_dashboard.html`: ブラウザで開くことができるインタラクティブなダッシュボード
+
+**使用方法**:
+
+```bash
+# 1. HTMLダッシュボードを生成
+python run_dashboard.py
+
+# 2. ブラウザでHTMLファイルを開く
+# macOS
+open market_dashboard.html
+
+# Linux
+xdg-open market_dashboard.html
+
+# Windows
+start market_dashboard.html
+```
+
+#### 注意事項
+
+- FMP (FinancialModelingPrep) APIキーが環境変数 `FMP_API_KEY` に設定されている必要があります
+- データ取得には時間がかかる場合があります（数分程度）
+- Oratnekスクリーニングを無効にする場合は、`MarketDashboard(enable_screeners=False)` で初期化してください
+
 ### A) ローカル環境での実行（レガシー）
 
 旧バージョンのスクリプトを直接実行する場合:
