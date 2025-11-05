@@ -305,7 +305,7 @@ class MarketDashboard:
         try:
             vix_data = self.fetch_ticker_data(self.vix_ticker, period='1mo', interval='1d')
             if not vix_data.empty:
-                vix_level = vix_data['Close'].iloc[-1]
+                vix_level = vix_data['Close'].iloc[-1].item()
                 vix_positive = vix_level < 20
         except Exception as e:
             print(f"Error fetching VIX: {e}")
@@ -440,30 +440,34 @@ class MarketDashboard:
                 if df.empty:
                     continue
 
-                current_price = df['Close'].iloc[-1]
+                # 重複列を削除
+                if df.columns.has_duplicates:
+                    df = df.loc[:, ~df.columns.duplicated()]
+
+                current_price = df['Close'].iloc[-1].item()
 
                 # YTD
                 ytd_start = df.loc[df.index >= f"{self.current_date.year}-01-01"]
                 if len(ytd_start) > 0:
-                    ytd_price = ytd_start['Close'].iloc[0]
+                    ytd_price = ytd_start['Close'].iloc[0].item()
                     ytd_pct = ((current_price - ytd_price) / ytd_price) * 100
                 else:
                     ytd_pct = 0
 
                 # 1週間
                 one_week_ago = df.iloc[-5] if len(df) >= 5 else df.iloc[0]
-                week_pct = ((current_price - one_week_ago['Close']) / one_week_ago['Close']) * 100
+                week_pct = ((current_price - one_week_ago['Close'].item()) / one_week_ago['Close'].item()) * 100
 
                 # 1ヶ月
                 one_month_ago = df.iloc[-21] if len(df) >= 21 else df.iloc[0]
-                month_pct = ((current_price - one_month_ago['Close']) / one_month_ago['Close']) * 100
+                month_pct = ((current_price - one_month_ago['Close'].item()) / one_month_ago['Close'].item()) * 100
 
                 # 1年
                 one_year_ago = df.iloc[-252] if len(df) >= 252 else df.iloc[0]
-                year_pct = ((current_price - one_year_ago['Close']) / one_year_ago['Close']) * 100
+                year_pct = ((current_price - one_year_ago['Close'].item()) / one_year_ago['Close'].item()) * 100
 
                 # 52週高値
-                high_52w = df['High'].tail(252).max()
+                high_52w = df['High'].tail(252).max().item()
                 from_high_pct = ((current_price - high_52w) / high_52w) * 100
 
                 results.append({
@@ -499,7 +503,11 @@ class MarketDashboard:
             if vix_data.empty:
                 return {}
 
-            current_vix = vix_data['Close'].iloc[-1]
+            # 重複列を削除
+            if vix_data.columns.has_duplicates:
+                vix_data = vix_data.loc[:, ~vix_data.columns.duplicated()]
+
+            current_vix = vix_data['Close'].iloc[-1].item()
 
             # VIXレベルの解釈
             if current_vix < 12:
@@ -514,8 +522,8 @@ class MarketDashboard:
                 interpretation = 'Extreme - Market Panic'
 
             # 52週高値/安値
-            high_52w = vix_data['High'].tail(252).max()
-            low_52w = vix_data['Low'].tail(252).min()
+            high_52w = vix_data['High'].tail(252).max().item()
+            low_52w = vix_data['Low'].tail(252).min().item()
 
             return {
                 'current': current_vix,
@@ -741,8 +749,7 @@ class MarketDashboard:
 
         # 5. Power Law Indicators (サンプル銘柄で計算)
         print("\n### POWER LAW INDICATORS ###")
-        sample_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'TSLA', 'META', 'NFLX']
-        power_law = self.calculate_power_law_indicators(sample_tickers)
+        power_law = self.calculate_power_law_indicators(self.screening_tickers)
         print(f"5 Days Above 50MA: {power_law.get('5d_above_20ma_pct', 0):.1f}%")
         print(f"50MA Above 150MA: {power_law.get('20ma_above_50ma_pct', 0):.1f}%")
         print(f"150MA Above 200MA: {power_law.get('50ma_above_200ma_pct', 0):.1f}%")

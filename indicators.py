@@ -105,6 +105,10 @@ def calculate_all_basic_indicators(df: pd.DataFrame, interval: str = '1d') -> pd
     """
     result_df = df.copy()
 
+    # yfinanceが重複列を返すことがあるため、重複を削除してデータ品質を確保
+    if result_df.columns.has_duplicates:
+        result_df = result_df.loc[:, ~result_df.columns.duplicated()]
+
     # --- 時間軸に応じたパラメータ設定 ---
     if interval == '1wk':
         # 週足用の期間
