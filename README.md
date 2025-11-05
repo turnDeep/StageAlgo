@@ -33,6 +33,26 @@ export FMP_API_KEY='your_fmp_api_key_here'
 
 ### 開発環境のセットアップ
 
+#### オプション1: Dev Container を使用（推奨）
+
+VS Code の Dev Container 機能を使用すると、一貫した開発環境を簡単に構築できます。
+
+**必要なもの:**
+- [Visual Studio Code](https://code.visualstudio.com/)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop)
+- VS Code 拡張機能: [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+
+**手順:**
+1. このリポジトリをクローン
+2. VS Code でプロジェクトを開く
+3. コマンドパレット (Ctrl+Shift+P / Cmd+Shift+P) を開く
+4. "Dev Containers: Reopen in Container" を選択
+5. コンテナのビルドと起動を待つ（初回は数分かかります）
+
+詳細は [.devcontainer/README.md](.devcontainer/README.md) を参照してください。
+
+#### オプション2: ローカル環境でのセットアップ
+
 ```bash
 # 依存ライブラリのインストール
 pip install -r requirements.txt
