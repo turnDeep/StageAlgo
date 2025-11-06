@@ -6,3 +6,4 @@ pandas-ta
 scipy
 tqdm
 pytz
+python-dotenv
