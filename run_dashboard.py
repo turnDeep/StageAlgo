@@ -4,8 +4,12 @@ Market Dashboard Runner
 ダッシュボードの実行とHTML生成
 """
 
+from dotenv import load_dotenv
 from market_dashboard import MarketDashboard
 from dashboard_visualizer import DashboardVisualizer
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def main():
