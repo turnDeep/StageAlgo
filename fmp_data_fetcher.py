@@ -45,11 +45,11 @@ class FMPDataFetcher:
         self.request_timestamps = []
 
     def _enforce_rate_limit(self):
-        """Enforce the rate limit of 300 requests per minute."""
+        """Enforce the rate limit of 750 requests per minute."""
         current_time = time.time()
         # Remove timestamps older than 60 seconds
         self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
-        if len(self.request_timestamps) >= 300:
+        if len(self.request_timestamps) >= 750:
             # Sleep until the oldest request is older than 60 seconds
             time.sleep(60 - (current_time - self.request_timestamps[0]))
             # Trim the list again after sleeping
