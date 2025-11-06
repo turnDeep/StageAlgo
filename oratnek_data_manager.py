@@ -270,8 +270,9 @@ class OratnekDataManager:
                 'Volume': 'sum'
             }).dropna()
 
-            # 列名を小文字に統一
+            # 列名を小文字に統一し、スペースをアンダースコアに変換
             df_daily.rename(columns=str.lower, inplace=True)
+            df_daily.rename(columns={'adj close': 'adj_close'}, inplace=True)
             df_weekly.rename(columns=str.lower, inplace=True)
 
             logger.info(f"'{symbol}': Fetched {len(df_daily)} daily and {len(df_weekly)} weekly records.")
@@ -328,8 +329,8 @@ class OratnekDataManager:
 
                 if not df_daily.empty:
                     cols = ['open', 'high', 'low', 'close', 'volume']
-                    if 'adj close' in df_daily.columns:
-                        cols.append('adj close')
+                    if 'adj_close' in df_daily.columns:
+                        cols.append('adj_close')
                     cols.extend(['sma_10', 'sma_21', 'sma_50', 'sma_150', 'sma_200', 'ema_200'])
 
                     df_to_save = df_daily[cols].copy()
