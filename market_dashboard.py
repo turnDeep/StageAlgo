@@ -531,8 +531,9 @@ class MarketDashboard:
 
                 # --- RS Rating ---
                 rs_calc = RSCalculator(indicators_df, spy_indicators)
-                rs_rating_series = rs_calc.calculate_rs_rating_series()
-                rs_rating = rs_rating_series.iloc[-1] if not rs_rating_series.empty else np.nan
+                rs_score_series = rs_calc.calculate_ibd_rs_score()
+                current_rs_score = rs_score_series.iloc[-1] if not rs_score_series.empty else 0
+                rs_rating = rs_calc.calculate_percentile_rating(current_rs_score)
 
                 # --- Relative Strength (vs SPY, 1-Year) ---
                 spy_perf_1y = ((spy_indicators['Close'].iloc[-1] - spy_indicators['Close'].iloc[-252]) / spy_indicators['Close'].iloc[-252]) * 100
