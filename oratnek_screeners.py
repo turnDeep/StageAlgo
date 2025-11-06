@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import concurrent.futures
 import logging
+from tqdm import tqdm
 
 from oratnek_data_manager import OratnekDataManager
 from indicators import calculate_all_basic_indicators
@@ -348,9 +349,9 @@ class OratnekScreener:
         """
         results = []
 
-        print("\n[Momentum 97] Screening...")
+        logger.info("\n[Momentum 97] Screening...")
 
-        for ticker in self.tickers:
+        for ticker in tqdm(self.tickers, desc="🚀 Momentum 97", unit="ticker"):
             data = self._get_stock_data(ticker)
             if data is None:
                 continue
@@ -384,7 +385,7 @@ class OratnekScreener:
         # ソート
         momentum_97 = momentum_97.sort_values('returns_1m', ascending=False)
 
-        print(f"  → Found {len(momentum_97)} stocks")
+        logger.info(f"  → Found {len(momentum_97)} stocks")
 
         return momentum_97
 
@@ -403,9 +404,9 @@ class OratnekScreener:
         """
         results = []
 
-        print("\n[Explosive EPS Growth] Screening...")
+        logger.info("\n[Explosive EPS Growth] Screening...")
 
-        for ticker in self.tickers:
+        for ticker in tqdm(self.tickers, desc="💥 Explosive EPS", unit="ticker"):
             data = self._get_stock_data(ticker)
             if data is None:
                 continue
@@ -431,7 +432,7 @@ class OratnekScreener:
         df = pd.DataFrame(results)
         df = df.sort_values('rs_rating', ascending=False)
 
-        print(f"  → Found {len(df)} stocks")
+        logger.info(f"  → Found {len(df)} stocks")
 
         return df
 
@@ -452,9 +453,9 @@ class OratnekScreener:
         """
         results = []
 
-        print("\n[Up on Volume] Screening...")
+        logger.info("\n[Up on Volume] Screening...")
 
-        for ticker in self.tickers:
+        for ticker in tqdm(self.tickers, desc="📈 Up on Volume", unit="ticker"):
             data = self._get_stock_data(ticker)
             if data is None:
                 continue
@@ -485,7 +486,7 @@ class OratnekScreener:
         df = pd.DataFrame(results)
         df = df.sort_values('vol_change_pct', ascending=False)
 
-        print(f"  → Found {len(df)} stocks")
+        logger.info(f"  → Found {len(df)} stocks")
 
         return df
 
@@ -504,9 +505,9 @@ class OratnekScreener:
         """
         results = []
 
-        print("\n[Top 2% RS Rating] Screening...")
+        logger.info("\n[Top 2% RS Rating] Screening...")
 
-        for ticker in self.tickers:
+        for ticker in tqdm(self.tickers, desc="⭐ Top 2% RS", unit="ticker"):
             data = self._get_stock_data(ticker)
             if data is None:
                 continue
@@ -536,7 +537,7 @@ class OratnekScreener:
         df = pd.DataFrame(results)
         df = df.sort_values('rs_rating', ascending=False)
 
-        print(f"  → Found {len(df)} stocks")
+        logger.info(f"  → Found {len(df)} stocks")
 
         return df
 
@@ -556,9 +557,9 @@ class OratnekScreener:
         """
         results = []
 
-        print("\n[4% Bullish Yesterday] Screening...")
+        logger.info("\n[4% Bullish Yesterday] Screening...")
 
-        for ticker in self.tickers:
+        for ticker in tqdm(self.tickers, desc="📊 4% Bullish", unit="ticker"):
             data = self._get_stock_data(ticker)
             if data is None:
                 continue
@@ -596,7 +597,7 @@ class OratnekScreener:
         df = pd.DataFrame(results)
         df = df.sort_values('yesterday_change_pct', ascending=False)
 
-        print(f"  → Found {len(df)} stocks")
+        logger.info(f"  → Found {len(df)} stocks")
 
         return df
 
@@ -618,9 +619,9 @@ class OratnekScreener:
         """
         results = []
 
-        print("\n[Healthy Chart Watch List] Screening...")
+        logger.info("\n[Healthy Chart Watch List] Screening...")
 
-        for ticker in self.tickers:
+        for ticker in tqdm(self.tickers, desc="💚 Healthy Chart", unit="ticker"):
             data = self._get_stock_data(ticker)
             if data is None:
                 continue
@@ -656,7 +657,7 @@ class OratnekScreener:
         df = pd.DataFrame(results)
         df = df.sort_values('comp_rating', ascending=False)
 
-        print(f"  → Found {len(df)} stocks")
+        logger.info(f"  → Found {len(df)} stocks")
 
         return df
 
@@ -736,31 +737,37 @@ class OratnekScreener:
         HWBの設計を参考に、バッチ処理とスレッドプールを使用
         """
         total = len(self.tickers)
-        processed = 0
 
-        for i in range(0, total, BATCH_SIZE):
-            batch = self.tickers[i:i + BATCH_SIZE]
-            logger.info(f"Processing batch {i//BATCH_SIZE + 1}/{(total + BATCH_SIZE - 1)//BATCH_SIZE} ({len(batch)} tickers)...")
+        # 全体の進捗バー
+        with tqdm(total=total, desc="📊 Preloading data", unit="ticker") as pbar:
+            for i in range(0, total, BATCH_SIZE):
+                batch = self.tickers[i:i + BATCH_SIZE]
+                batch_num = i//BATCH_SIZE + 1
+                total_batches = (total + BATCH_SIZE - 1)//BATCH_SIZE
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                future_to_ticker = {
-                    executor.submit(self._get_stock_data, ticker): ticker
-                    for ticker in batch
-                }
+                pbar.set_description(f"📊 Batch {batch_num}/{total_batches}")
 
-                for future in concurrent.futures.as_completed(future_to_ticker):
-                    ticker = future_to_ticker[future]
-                    processed += 1
-                    try:
-                        result = future.result()
-                        if result:
-                            logger.debug(f"[{processed}/{total}] {ticker}: Data loaded")
-                        else:
-                            logger.debug(f"[{processed}/{total}] {ticker}: No data")
-                    except Exception as exc:
-                        logger.error(f"[{processed}/{total}] {ticker}: Error - {exc}")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    future_to_ticker = {
+                        executor.submit(self._get_stock_data, ticker): ticker
+                        for ticker in batch
+                    }
 
-        logger.info(f"Data preloading completed. Cached {len(self.data_cache)} tickers.")
+                    for future in concurrent.futures.as_completed(future_to_ticker):
+                        ticker = future_to_ticker[future]
+                        try:
+                            result = future.result()
+                            if result:
+                                pbar.set_postfix_str(f"✓ {ticker}")
+                            else:
+                                pbar.set_postfix_str(f"✗ {ticker} (no data)")
+                        except Exception as exc:
+                            pbar.set_postfix_str(f"✗ {ticker} (error)")
+                            logger.error(f"{ticker}: Error - {exc}")
+                        finally:
+                            pbar.update(1)
+
+        logger.info(f"✓ Data preloading completed. Cached {len(self.data_cache)} tickers.")
 
     def _save_results(self, results: Dict[str, pd.DataFrame], duration: float):
         """
