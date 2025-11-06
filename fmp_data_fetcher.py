@@ -25,12 +25,13 @@ class FMPDataFetcher:
     BASE_URL = "https://financialmodelingprep.com/api/v3"
     STABLE_URL = "https://financialmodelingprep.com/stable"
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, rate_limit: Optional[int] = None):
         """
         Initialize FMP Data Fetcher
 
         Args:
             api_key: FMP API Key (環境変数 FMP_API_KEY から自動取得可能)
+            rate_limit: API rate limit per minute (環境変数 FMP_RATE_LIMIT から自動取得可能, デフォルト: 750)
         """
         self.api_key = api_key or os.getenv('FMP_API_KEY')
         if not self.api_key:
@@ -39,17 +40,20 @@ class FMPDataFetcher:
                 "or pass api_key parameter."
             )
 
+        # レート制限の設定（環境変数から取得、デフォルトは750 req/min - Premium Plan）
+        self.rate_limit = rate_limit or int(os.getenv('FMP_RATE_LIMIT', '750'))
+
         # データキャッシュ
         self.cache = {}
         self.session = Session(impersonate="chrome110")
         self.request_timestamps = []
 
     def _enforce_rate_limit(self):
-        """Enforce the rate limit of 300 requests per minute."""
+        """Enforce the configured API rate limit per minute."""
         current_time = time.time()
         # Remove timestamps older than 60 seconds
         self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
-        if len(self.request_timestamps) >= 300:
+        if len(self.request_timestamps) >= self.rate_limit:
             # Sleep until the oldest request is older than 60 seconds
             time.sleep(60 - (current_time - self.request_timestamps[0]))
             # Trim the list again after sleeping
