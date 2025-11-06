@@ -1,375 +1,292 @@
 # dashboard_visualizer.py
-"""
-Dashboard Visualization Module
-HTMLダッシュボードの生成
-"""
-
 import pandas as pd
-from typing import Dict
+from typing import Dict, Any
 from datetime import datetime
-
+import numpy as np
 
 class DashboardVisualizer:
     """
-    HTMLダッシュボードの生成
+    Generates the HTML dashboard from calculated market data.
     """
 
-    def __init__(self):
-        self.html_content = ""
-
     def _format_percentage(self, value: float, decimals: int = 2) -> str:
-        """パーセンテージを色付きフォーマット"""
-        color = 'green' if value > 0 else 'red'
-        return f'<span style="color: {color};">{value:.{decimals}f}%</span>'
+        if pd.isna(value):
+            return "N/A"
+        color = '#28a745' if value > 0 else '#dc3545'
+        return f'<span style="color: {color}; font-weight: 500;">{value:.{decimals}f}%</span>'
 
-    def _format_value(self, value: float, decimals: int = 2) -> str:
-        """数値を色付きフォーマット"""
-        color = 'green' if value > 0 else 'red'
-        return f'<span style="color: {color};">{value:.{decimals}f}</span>'
+    def _get_trend_arrow(self, value: bool) -> str:
+        if pd.isna(value):
+            return " "
+        return '<span style="color: #28a745; font-size: 1.2em;">▲</span>' if value else '<span style="color: #dc3545; font-size: 1.2em;">▼</span>'
+
+    def _generate_bar(self, value: float, color: str = '#007bff', max_val: int = 100) -> str:
+        if pd.isna(value):
+            return ""
+        # Normalize value to be between 0 and 100
+        width = min(max(abs(value), 0), max_val)
+        return f"""
+        <div style="position: relative; height: 20px; background-color: #e9ecef; border-radius: 4px; width: 100px;">
+            <div style="position: absolute; left: 0; top: 0; height: 100%; width: {width}%; background-color: {color}; border-radius: 4px;"></div>
+            <span style="position: absolute; left: 5px; top: 50%; transform: translateY(-50%); font-size: 12px; color: #fff; text-shadow: 1px 1px 1px #000;">{value:.1f}</span>
+        </div>
+        """
+
+    def _generate_main_table(self, df: pd.DataFrame, title: str) -> str:
+        if df.empty:
+            return f'<h2>{title}</h2><p>No data available.</p>'
+
+        headers = [
+            'ticker', 'index', 'price', '% 1D', 'Relative Strength', 'RS STS %',
+            '% YTD', '% 1W', '% 1M', '% 1Y', '% From 52W High',
+            '10MA', '20MA', '50MA', '200MA', '20>50MA', '50>200MA'
+        ]
+
+        # Ensure all columns exist, fill with NaN if they don't
+        for col in headers:
+            if col not in df.columns:
+                df[col] = np.nan
+
+        # Reorder df to match headers
+        df = df[headers]
+
+        table_rows = ""
+        for _, row in df.iterrows():
+            table_rows += f"""
+            <tr>
+                <td><strong>{row['ticker']}</strong><br><span style="font-size: 11px; color: #6c757d;">{row['index']}</span></td>
+                <td>${row['price']:.2f}</td>
+                <td>{self._format_percentage(row['% 1D'])}</td>
+                <td>{self._generate_bar(row['Relative Strength'], '#6c757d')}</td>
+                <td>{self._generate_bar(row['RS STS %'], '#007bff')}</td>
+                <td>{self._format_percentage(row['% YTD'])}</td>
+                <td>{self._format_percentage(row['% 1W'])}</td>
+                <td>{self._format_percentage(row['% 1M'])}</td>
+                <td>{self._format_percentage(row['% 1Y'])}</td>
+                <td>{self._generate_bar(row['% From 52W High'], '#dc3545', 50)}</td>
+                <td style="text-align: center;">{self._get_trend_arrow(row['10MA'])}</td>
+                <td style="text-align: center;">{self._get_trend_arrow(row['20MA'])}</td>
+                <td style="text-align: center;">{self._get_trend_arrow(row['50MA'])}</td>
+                <td style="text-align: center;">{self._get_trend_arrow(row['200MA'])}</td>
+                <td style="text-align: center;">{self._get_trend_arrow(row['20>50MA'])}</td>
+                <td style="text-align: center;">{self._get_trend_arrow(row['50>200MA'])}</td>
+            </tr>
+            """
+
+        html = f"""
+        <div class="table-container">
+            <h3>{title}</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th rowspan="2">Ticker</th>
+                        <th rowspan="2">Price</th>
+                        <th rowspan="2">% 1D</th>
+                        <th rowspan="2">Relative Strength</th>
+                        <th rowspan="2">RS STS %</th>
+                        <th colspan="4">Performance</th>
+                        <th colspan="1">Highs</th>
+                        <th colspan="6">Trend Indicators (MAs)</th>
+                    </tr>
+                    <tr>
+                        <th>% YTD</th>
+                        <th>% 1W</th>
+                        <th>% 1M</th>
+                        <th>% 1Y</th>
+                        <th>% From 52W High</th>
+                        <th>10MA</th>
+                        <th>20MA</th>
+                        <th>50MA</th>
+                        <th>200MA</th>
+                        <th>20>50MA</th>
+                        <th>50>200MA</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {table_rows}
+                </tbody>
+            </table>
+        </div>
+        """
+        return html
+
+    def _get_exposure_arrow(self, score: float) -> str:
+        if 80 <= score <= 100: return "1"
+        if 60 <= score < 80:  return "2"
+        if 40 <= score < 60:  return "3"
+        if 20 <= score < 40:  return "4"
+        if 0 <= score < 20:   return "5"
+        return "0"
+
+    def _generate_exposure_section(self, exposure: Dict) -> str:
+        score = exposure.get('score', 0)
+        level = exposure.get('level', 'N/A')
+        arrow_pos = self._get_exposure_arrow(score)
+
+        return f"""
+        <div class="grid-item">
+            <h3>Market Exposure</h3>
+            <div class="exposure-grid">
+                <table class="exposure-table">
+                    <tbody>
+                        <tr class="ex-bullish"><td>Bullish</td><td>100% - 80%</td><td class="arrow-cell">{'<span class="arrow">◀</span>' if arrow_pos == '1' else ''}</td></tr>
+                        <tr class="ex-positive"><td>Positive</td><td>80% - 60%</td><td class="arrow-cell">{'<span class="arrow">◀</span>' if arrow_pos == '2' else ''}</td></tr>
+                        <tr class="ex-neutral"><td>Neutral</td><td>60% - 40%</td><td class="arrow-cell">{'<span class="arrow">◀</span>' if arrow_pos == '3' else ''}</td></tr>
+                        <tr class="ex-negative"><td>Negative</td><td>40% - 20%</td><td class="arrow-cell">{'<span class="arrow">◀</span>' if arrow_pos == '4' else ''}</td></tr>
+                        <tr class="ex-bearish"><td>Bearish</td><td>20% - 0%</td><td class="arrow-cell">{'<span class="arrow">◀</span>' if arrow_pos == '5' else ''}</td></tr>
+                    </tbody>
+                </table>
+                <div class="exposure-score">
+                    <div>{score:.2f}%</div>
+                    <div style="font-size: 16px;">{level}</div>
+                </div>
+            </div>
+            <canvas id="exposureChart" style="margin-top: 20px;"></canvas>
+        </div>
+        """
+
+    def _generate_screener_section(self, screener_results: Dict) -> str:
+        if not screener_results:
+            return ""
+
+        screener_names = {
+            'momentum_97': 'Momentum 97',
+            'explosive_eps': 'Explosive Estimated EPS Growth Stocks (RS STS % ≧ 80)',
+            'healthy_chart': 'Healthy Chart Stocks',
+            'up_on_volume': 'Up on Volume List (RS STS % ≧ 80)',
+            'top_2_rs': 'Top 2% Rs Rating List',
+            'bullish_4pct': '4% Bullish Yesterday (RS STS % ≧ 80)'
+        }
+
+        html = ""
+        for key, name in screener_names.items():
+            tickers = screener_results.get(key, pd.DataFrame())
+            ticker_list = tickers['Ticker'].tolist() if not tickers.empty else []
+
+            html += f"""
+            <div class="grid-item screener-item">
+                <h5>{name}</h5>
+                <div class="ticker-list">
+                    {' '.join([f'<span>{t}</span>' for t in ticker_list]) if ticker_list else 'No stocks found.'}
+                </div>
+            </div>
+            """
+        return html
 
     def generate_html_dashboard(self,
                                 exposure: Dict,
-                                performance: pd.DataFrame,
-                                vix: Dict,
-                                sectors: pd.DataFrame,
-                                power_law: Dict,
-                                screener_results: Dict = None) -> str:
-        """
-        HTMLダッシュボードを生成
-        """
-        # パーセンテージ列を事前にフォーマット
-        performance_html = performance.copy()
-        if not performance_html.empty:
-            for col in ['YTD %', '1W %', '1M %', '1Y %', 'From 52W High %']:
-                if col in performance_html.columns:
-                    performance_html[col] = performance_html[col].apply(
-                        lambda x: self._format_percentage(x)
-                    )
-            performance_html['Current Price'] = performance_html['Current Price'].apply(
-                lambda x: f'${x:.2f}'
-            )
+                                market_performance: pd.DataFrame,
+                                sectors_performance: pd.DataFrame,
+                                macro_performance: pd.DataFrame,
+                                screener_results: Dict[str, pd.DataFrame]
+                               ) -> str:
 
-        sectors_html = sectors.copy()
-        if not sectors_html.empty:
-            if '1D %' in sectors_html.columns:
-                sectors_html['1D %'] = sectors_html['1D %'].apply(
-                    lambda x: self._format_percentage(x)
-                )
-            if 'Relative Strength' in sectors_html.columns:
-                sectors_html['Relative Strength'] = sectors_html['Relative Strength'].apply(
-                    lambda x: self._format_value(x)
-                )
-            if 'RS Rating' in sectors_html.columns:
-                sectors_html['RS Rating'] = sectors_html['RS Rating'].apply(
-                    lambda x: f'{x:.1f}'
-                )
-            if 'Price' in sectors_html.columns:
-                sectors_html['Price'] = sectors_html['Price'].apply(
-                    lambda x: f'${x:.2f}'
-                )
-
-        # マーカーの位置を計算 (-60から100の範囲を0-100%に変換)
-        marker_position = (exposure['score'] + 60) / 1.6
+        # Load exposure history
+        try:
+            exposure_history_df = pd.read_csv('market_exposure_history.csv')
+            exposure_dates = exposure_history_df['date'].tolist()
+            exposure_scores = exposure_history_df['score'].tolist()
+        except FileNotFoundError:
+            exposure_dates = []
+            exposure_scores = []
 
         html = f"""
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Market Dashboard</title>
-    <meta charset="utf-8">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body {{
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-            background-color: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        }}
-        h1 {{
-            text-align: center;
-            color: #333;
-        }}
-        .section {{
-            margin: 30px 0;
-        }}
-        .section-title {{
-            font-size: 18px;
-            font-weight: bold;
-            color: #444;
-            margin-bottom: 10px;
-            border-bottom: 2px solid #007bff;
-            padding-bottom: 5px;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 10px 0;
-        }}
-        th, td {{
-            padding: 10px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }}
-        th {{
-            background-color: #007bff;
-            color: white;
-        }}
-        .positive {{
-            color: green;
-        }}
-        .negative {{
-            color: red;
-        }}
-        .exposure-gauge {{
-            width: 100%;
-            height: 40px;
-            background: linear-gradient(to right, #dc3545, #ffc107, #28a745);
-            border-radius: 20px;
-            position: relative;
-            margin: 20px 0;
-        }}
-        .exposure-marker {{
-            position: absolute;
-            width: 4px;
-            height: 50px;
-            background-color: black;
-            top: -5px;
-            left: {marker_position}%;
-        }}
-        .stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin: 20px 0;
-        }}
-        .stat-card {{
-            background-color: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            border-left: 4px solid #007bff;
-        }}
-        .stat-label {{
-            font-size: 12px;
-            color: #666;
-        }}
-        .stat-value {{
-            font-size: 24px;
-            font-weight: bold;
-            color: #333;
-        }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8f9fa; color: #212529; margin: 0; padding: 20px; }}
+        .container {{ max-width: 1800px; margin: 0 auto; }}
+        h1, h3, h5 {{ margin: 0; }}
+        h1 {{ margin-bottom: 5px; }}
+        .header {{ margin-bottom: 20px; }}
+        .grid-container {{ display: grid; grid-template-columns: 2.5fr 1fr; gap: 20px; }}
+        .main-content {{ display: flex; flex-direction: column; gap: 20px; }}
+        .right-sidebar {{ display: flex; flex-direction: column; gap: 20px; }}
+        .grid-item {{ background-color: #ffffff; border: 1px solid #dee2e6; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }}
+        .table-container {{ overflow-x: auto; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+        th, td {{ padding: 8px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }}
+        thead th {{ background-color: #f8f9fa; font-weight: 600; text-align: center; vertical-align: middle; }}
+        thead th[rowspan="2"] {{ border-right: 1px solid #dee2e6; }}
+        tbody tr:hover {{ background-color: #f1f3f5; }}
+        .exposure-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: center; }}
+        .exposure-table {{ font-size: 14px; }}
+        .exposure-table td {{ border: none; padding: 6px; }}
+        .exposure-table .arrow-cell {{ width: 30px; }}
+        .exposure-table .arrow {{ color: #dc3545; font-size: 24px; }}
+        .exposure-score {{ text-align: center; font-size: 28px; font-weight: bold; }}
+        .ex-bullish {{ background-color: rgba(40, 167, 69, 0.2); }}
+        .ex-positive {{ background-color: rgba(40, 167, 69, 0.1); }}
+        .ex-neutral {{ background-color: rgba(255, 193, 7, 0.1); }}
+        .ex-negative {{ background-color: rgba(220, 53, 69, 0.1); }}
+        .ex-bearish {{ background-color: rgba(220, 53, 69, 0.2); }}
+        .screener-item h5 {{ margin-bottom: 10px; }}
+        .ticker-list {{ display: flex; flex-wrap: wrap; gap: 5px; }}
+        .ticker-list span {{ background-color: #e9ecef; border-radius: 4px; padding: 3px 8px; font-size: 12px; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 Market Dashboard</h1>
-        <p style="text-align: center; color: #666;">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-
-        <!-- Market Exposure -->
-        <div class="section">
-            <div class="section-title">Market Exposure</div>
-            <div class="exposure-gauge">
-                <div class="exposure-marker"></div>
+        <div class="header">
+            <h1>Market Dashboard</h1>
+            <span>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>
+        </div>
+        <div class="grid-container">
+            <div class="main-content">
+                {self._generate_main_table(market_performance, "Market")}
+                {self._generate_main_table(sectors_performance, "Sectors")}
+                {self._generate_main_table(macro_performance, "Macro")}
             </div>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">Exposure Score</div>
-                    <div class="stat-value {'positive' if exposure['score'] > 0 else 'negative'}">{exposure['score']:.1f}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Market Level</div>
-                    <div class="stat-value">{exposure['level']}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">VIX Level</div>
-                    <div class="stat-value">{exposure.get('vix_level', 'N/A') if exposure.get('vix_level') else 'N/A'}</div>
-                </div>
+            <div class="right-sidebar">
+                {self._generate_exposure_section(exposure)}
+                {self._generate_screener_section(screener_results)}
             </div>
         </div>
-
-        <!-- Market Performance -->
-        <div class="section">
-            <div class="section-title">Market Performance Overview</div>
-            {performance_html.to_html(index=False, escape=False) if not performance_html.empty else '<p>No data available</p>'}
-        </div>
-
-        <!-- VIX Analysis -->
-        <div class="section">
-            <div class="section-title">VIX Analysis</div>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">Current VIX</div>
-                    <div class="stat-value">{vix.get('current', 'N/A') if vix.get('current') else 'N/A'}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Interpretation</div>
-                    <div class="stat-value" style="font-size: 16px;">{vix.get('interpretation', 'N/A') if vix else 'N/A'}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">52W High</div>
-                    <div class="stat-value">{vix.get('52w_high', 'N/A') if vix.get('52w_high') else 'N/A'}</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">52W Low</div>
-                    <div class="stat-value">{vix.get('52w_low', 'N/A') if vix.get('52w_low') else 'N/A'}</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Sector Performance -->
-        <div class="section">
-            <div class="section-title">Sector Performance</div>
-            {sectors_html.to_html(index=False, escape=False) if not sectors_html.empty else '<p>No data available</p>'}
-        </div>
-
-        <!-- Power Law Indicators -->
-        <div class="section">
-            <div class="section-title">Power Law Indicators</div>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">5 Days Above 50MA</div>
-                    <div class="stat-value">{power_law.get('5d_above_20ma_pct', 0):.1f}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">50MA Above 150MA</div>
-                    <div class="stat-value">{power_law.get('20ma_above_50ma_pct', 0):.1f}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">150MA Above 200MA</div>
-                    <div class="stat-value">{power_law.get('50ma_above_200ma_pct', 0):.1f}%</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Total Stocks Analyzed</div>
-                    <div class="stat-value">{power_law.get('total', 0)}</div>
-                </div>
-            </div>
-        </div>
-"""
-
-        # スクリーニング結果セクションを追加
-        if screener_results:
-            screener_names = {
-                'momentum_97': 'Momentum 97',
-                'explosive_eps': 'Explosive EPS Growth',
-                'up_on_volume': 'Up on Volume',
-                'top_2_rs': 'Top 2% RS Rating',
-                'bullish_4pct': '4% Bullish Yesterday',
-                'healthy_chart': 'Healthy Chart Watch List'
-            }
-
-            html += """
-        <!-- Oratnek Screeners -->
-        <div class="section">
-            <div class="section-title">🎯 Oratnek Screeners - IBD Style Stock Lists</div>
-            <div style="margin-bottom: 20px; padding: 15px; background-color: #e7f3ff; border-left: 4px solid #007bff; border-radius: 5px;">
-                <strong>About Oratnek Screeners:</strong><br>
-                これらのスクリーニングリストは、Investor's Business Daily (IBD) の手法に基づいています。<br>
-                強力なモメンタム、機関投資家の蓄積、健全なチャート形状を持つ銘柄を特定します。
-            </div>
-"""
-
-            for key, name in screener_names.items():
-                if key in screener_results:
-                    df = screener_results[key]
-
-                    html += f"""
-            <div style="margin-bottom: 30px;">
-                <h3 style="color: #007bff; margin-bottom: 10px;">📈 {name}</h3>
-                <div style="margin-bottom: 10px;">
-                    <span style="background-color: #28a745; color: white; padding: 5px 10px; border-radius: 5px; font-weight: bold;">
-                        {len(df)} stocks found
-                    </span>
-                </div>
-"""
-
-                    if not df.empty:
-                        # データフレームをHTMLテーブルに変換（上位10件のみ表示）
-                        display_df = df.head(10).copy()
-
-                        # 数値列のフォーマット
-                        for col in display_df.columns:
-                            if 'pct' in col.lower() or '%' in col:
-                                display_df[col] = display_df[col].apply(lambda x: f'{x:.2f}%')
-                            elif 'price' in col.lower():
-                                display_df[col] = display_df[col].apply(lambda x: f'${x:.2f}')
-                            elif 'rating' in col.lower():
-                                display_df[col] = display_df[col].apply(lambda x: f'{x:.1f}' if isinstance(x, (int, float)) else x)
-                            elif 'volume' in col.lower():
-                                display_df[col] = display_df[col].apply(lambda x: f'{x:,.0f}' if isinstance(x, (int, float)) else x)
-
-                        html += display_df.to_html(index=False, escape=False)
-
-                        if len(df) > 10:
-                            html += f"""
-                <p style="color: #666; font-style: italic; margin-top: 10px;">
-                    ... and {len(df) - 10} more stocks
-                </p>
-"""
-                    else:
-                        html += """
-                <p style="color: #999; font-style: italic;">No stocks found matching the criteria</p>
-"""
-
-                    html += """
-            </div>
-"""
-
-            html += """
-        </div>
-"""
-
-        html += """
     </div>
+    <script>
+        const ctx = document.getElementById('exposureChart').getContext('2d');
+        const exposureChart = new Chart(ctx, {{
+            type: 'line',
+            data: {{
+                labels: {exposure_dates},
+                datasets: [{{
+                    label: 'Market Exposure Score',
+                    data: {exposure_scores},
+                    borderColor: 'rgba(0, 123, 255, 1)',
+                    backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    fill: true,
+                    tension: 0.1
+                }}]
+            }},
+            options: {{
+                scales: {{
+                    y: {{
+                        beginAtZero: true,
+                        max: 100
+                    }}
+                }},
+                plugins: {{
+                    legend: {{
+                        display: false
+                    }}
+                }}
+            }}
+        }});
+    </script>
 </body>
 </html>
-"""
+        """
         return html
 
     def save_html(self, html_content: str, filename: str = 'market_dashboard.html'):
-        """
-        HTMLをファイルに保存
-        """
+        """Saves the HTML content to a file."""
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(html_content)
         print(f"Dashboard saved to: {filename}")
-
-
-if __name__ == '__main__':
-    # テスト用のダミーデータ
-    visualizer = DashboardVisualizer()
-
-    exposure = {
-        'score': 45.0,
-        'level': 'Neutral',
-        'vix_level': 18.5
-    }
-
-    performance = pd.DataFrame([
-        {'Index': 'S&P 500', 'Ticker': 'SPY', 'YTD %': 12.5, '1W %': 2.3, '1M %': 5.1, '1Y %': 18.2, 'From 52W High %': -3.2, 'Current Price': 450.25}
-    ])
-
-    vix = {
-        'current': 18.5,
-        'interpretation': 'Low - Stable Market',
-        '52w_high': 35.2,
-        '52w_low': 12.1
-    }
-
-    sectors = pd.DataFrame([
-        {'Sector': 'Technology', 'Ticker': 'XLK', 'Price': 150.25, '1D %': 1.2, 'Relative Strength': 5.3, 'RS Rating': 85.0}
-    ])
-
-    power_law = {
-        '5d_above_20ma_pct': 65.0,
-        '20ma_above_50ma_pct': 55.0,
-        '50ma_above_200ma_pct': 45.0,
-        'total': 8
-    }
-
-    html = visualizer.generate_html_dashboard(exposure, performance, vix, sectors, power_law)
-    visualizer.save_html(html, 'test_dashboard.html')

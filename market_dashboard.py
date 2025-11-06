@@ -41,37 +41,50 @@ class MarketDashboard:
         self.current_date = datetime.now()
         self.enable_screeners = enable_screeners
 
-        # 主要指数のティッカー
-        self.major_indices = {
+        # Market
+        self.market_tickers = {
             'SPY': 'S&P 500',
-            'QQQ': 'Nasdaq 100',
-            'IWM': 'Russell 2000',
-            'DIA': 'Dow Jones',
+            'QQQ': 'NASDAQ 100',
+            'MAGS': 'Magnificent Seven',
+            'RSP': 'Eql Wght S&P 500',
+            'QQEW': 'Eql Wght NASDAQ 100',
+            'IWM': 'Russell 2000'
         }
 
-        # セクターETF
-        self.sectors = {
-            'XLK': 'Technology',
-            'XLF': 'Financials',
-            'XLV': 'Healthcare',
-            'XLE': 'Energy',
-            'XLI': 'Industrials',
-            'XLY': 'Consumer Discretionary',
-            'XLP': 'Consumer Staples',
-            'XLB': 'Materials',
-            'XLU': 'Utilities',
-            'XLRE': 'Real Estate',
-            'XLC': 'Communication Services',
+        # Sectors
+        self.sectors_tickers = {
+            'EPOL': 'Poland', 'EWG': 'Germany', 'GLD': 'Gold', 'KWEB': 'China', 'IEV': 'Europe',
+            'ITA': 'Aerospace/Defense', 'CIBR': 'Cybersecurity', 'IBIT': 'Bitcoin', 'BLOK': 'Blockchain',
+            'IAI': 'Broker', 'NLR': 'Uranium/Nuclear', 'XLF': 'Finance', 'XLU': 'Utilities',
+            'TAN': 'Solar', 'UFO': 'Space', 'XLP': 'Consumer Staples', 'FFTY': 'IBD 50',
+            'INDA': 'India', 'ARKW': 'ARKW', 'XLK': 'Technology', 'XLE': 'Energy', 'IPO': 'IPO',
+            'SOXX': 'Semiconductor', 'MDY': 'MidCap 400', 'SCHD': 'Dividend', 'DIA': 'Dow Jones',
+            'ITB': 'Home Construction', 'USO': 'Oil', 'IBB': 'Biotechnology'
         }
 
-        # VIX
+        # Macro
+        self.macro_tickers = {
+            'NYICDX': 'U.S. Dollar',
+            '^VIX': 'VIX',
+            'TLT': 'Bond 20+ Year'
+        }
+
         self.vix_ticker = '^VIX'
 
         # データキャッシュ
         self.data_cache = {}
 
         # スクリーニング対象銘柄
-        self.screening_tickers = get_default_tickers()
+        self.screening_tickers = self._load_all_tickers()
+
+    def _load_all_tickers(self) -> List[str]:
+        """stock.csvからすべてのティッカーを読み込む"""
+        try:
+            df = pd.read_csv('stock.csv')
+            return df['Ticker'].dropna().unique().tolist()
+        except FileNotFoundError:
+            print("Warning: stock.csv not found. Screener will be empty.")
+            return []
 
     def fetch_ticker_data(self, ticker: str, period: str = '2y', interval: str = '1d') -> pd.DataFrame:
         """
@@ -138,7 +151,7 @@ class MarketDashboard:
         - 0-20%: Bearish
         """
         # 評価対象：主要指数 + セクターETF
-        all_tickers = list(self.major_indices.keys()) + list(self.sectors.keys())
+        all_tickers = list(self.market_tickers.keys()) + list(self.sectors_tickers.keys())
 
         # 各要因のカウンター
         factors = {
@@ -444,6 +457,25 @@ class MarketDashboard:
             }
         }
 
+    def update_market_exposure_history(self, current_score: float):
+        """Market Exposureの履歴を更新する"""
+        history_file = 'market_exposure_history.csv'
+        today = self.current_date.strftime('%Y-%m-%d')
+
+        try:
+            if pd.io.common.file_exists(history_file):
+                history_df = pd.read_csv(history_file, index_col='date')
+                history_df.loc[today] = current_score
+            else:
+                history_df = pd.DataFrame({'score': [current_score]}, index=[today])
+                history_df.index.name = 'date'
+
+            history_df.to_csv(history_file)
+            print(f"Market exposure history updated in {history_file}")
+
+        except Exception as e:
+            print(f"Error updating market exposure history: {e}")
+
     def calculate_market_breadth(self, index_ticker: str = 'SPY') -> Dict:
         """
         Market Breadth (市場幅指標) を計算
@@ -464,250 +496,97 @@ class MarketDashboard:
             'stocks_above_200ma_pct': 58.0,  # 仮の値
         }
 
-    def calculate_market_performance(self) -> pd.DataFrame:
+    def calculate_ticker_performance(self, tickers: Dict[str, str]) -> pd.DataFrame:
         """
-        Market Performance Overview を計算
-
-        各指数の:
-        - % YTD (年初来)
-        - % 1W (1週間)
-        - % 1M (1ヶ月)
-        - % 1Y (1年)
-        - % From 52W High (52週高値からの距離)
+        指定されたティッカーリストのパフォーマンス指標をすべて計算する
         """
         results = []
 
-        for ticker, name in self.major_indices.items():
+        # RS RatingのためにSPYデータを事前に取得
+        spy_df = self.fetch_ticker_data('SPY', period='2y', interval='1d')
+        if spy_df.empty:
+            print("Error: Could not fetch SPY data for RS Rating calculation.")
+            return pd.DataFrame()
+        spy_indicators = calculate_all_basic_indicators(spy_df.copy())
+
+        for ticker, name in tickers.items():
             try:
                 df = self.fetch_ticker_data(ticker, period='2y', interval='1d')
-
-                if df.empty:
+                if df.empty or len(df) < 252:
+                    print(f"Skipping {ticker} due to insufficient data.")
                     continue
 
-                # 重複列を削除
-                if df.columns.has_duplicates:
-                    df = df.loc[:, ~df.columns.duplicated()]
-
-                current_price = df['Close'].iloc[-1].item()
-
-                # YTD
-                ytd_start = df.loc[df.index >= f"{self.current_date.year}-01-01"]
-                if len(ytd_start) > 0:
-                    ytd_price = ytd_start['Close'].iloc[0].item()
-                    ytd_pct = ((current_price - ytd_price) / ytd_price) * 100
-                else:
-                    ytd_pct = 0
-
-                # 1週間
-                one_week_ago = df.iloc[-5] if len(df) >= 5 else df.iloc[0]
-                week_pct = ((current_price - one_week_ago['Close'].item()) / one_week_ago['Close'].item()) * 100
-
-                # 1ヶ月
-                one_month_ago = df.iloc[-21] if len(df) >= 21 else df.iloc[0]
-                month_pct = ((current_price - one_month_ago['Close'].item()) / one_month_ago['Close'].item()) * 100
-
-                # 1年
-                one_year_ago = df.iloc[-252] if len(df) >= 252 else df.iloc[0]
-                year_pct = ((current_price - one_year_ago['Close'].item()) / one_year_ago['Close'].item()) * 100
-
-                # 52週高値
-                high_52w = df['High'].tail(252).max().item()
-                from_high_pct = ((current_price - high_52w) / high_52w) * 100
-
-                results.append({
-                    'Index': name,
-                    'Ticker': ticker,
-                    'YTD %': ytd_pct,
-                    '1W %': week_pct,
-                    '1M %': month_pct,
-                    '1Y %': year_pct,
-                    'From 52W High %': from_high_pct,
-                    'Current Price': current_price
-                })
-            except Exception as e:
-                print(f"Error processing {ticker}: {e}")
-                continue
-
-        return pd.DataFrame(results)
-
-    def get_vix_analysis(self) -> Dict:
-        """
-        VIX分析
-
-        VIXレベルの解釈:
-        - 0-12: 低ボラティリティ (安定)
-        - 13-19: 通常
-        - 20-30: やや高い (注意)
-        - 30+: 高い (恐怖)
-        - 40+: 極度の恐怖
-        """
-        try:
-            vix_data = self.fetch_ticker_data(self.vix_ticker, period='6mo', interval='1d')
-
-            if vix_data.empty:
-                return {}
-
-            # 重複列を削除
-            if vix_data.columns.has_duplicates:
-                vix_data = vix_data.loc[:, ~vix_data.columns.duplicated()]
-
-            current_vix = vix_data['Close'].iloc[-1].item()
-
-            # VIXレベルの解釈
-            if current_vix < 12:
-                interpretation = 'Very Low - Market Complacency'
-            elif current_vix < 20:
-                interpretation = 'Low - Stable Market'
-            elif current_vix < 30:
-                interpretation = 'Moderate - Elevated Uncertainty'
-            elif current_vix < 40:
-                interpretation = 'High - Significant Fear'
-            else:
-                interpretation = 'Extreme - Market Panic'
-
-            # 52週高値/安値
-            high_52w = vix_data['High'].tail(252).max().item()
-            low_52w = vix_data['Low'].tail(252).min().item()
-
-            return {
-                'current': current_vix,
-                'interpretation': interpretation,
-                '52w_high': high_52w,
-                '52w_low': low_52w,
-                'from_high_pct': ((current_vix - high_52w) / high_52w) * 100,
-                'from_low_pct': ((current_vix - low_52w) / low_52w) * 100
-            }
-        except Exception as e:
-            print(f"Error analyzing VIX: {e}")
-            return {}
-
-    def calculate_power_law_indicators(self, tickers: List[str]) -> Dict:
-        """
-        Power Law Indicators を計算
-
-        - % of stocks with 5-day above 20MA
-        - % of stocks with 20MA above 50MA
-        - % of stocks with 50MA above 200MA
-        """
-        results = {
-            '5d_above_20ma': 0,
-            '20ma_above_50ma': 0,
-            '50ma_above_200ma': 0,
-            'total': 0
-        }
-
-        for ticker in tickers:
-            try:
-                df, _ = fetch_stock_data(ticker, period='2y')
-                if df is None or len(df) < 252:
-                    continue
-
-                indicators_df = calculate_all_basic_indicators(df)
-                if len(indicators_df) < 252:
-                    continue
-
-                latest = indicators_df.iloc[-1]
-                last_5 = indicators_df.tail(5)
-
-                results['total'] += 1
-
-                # 5日間50MA以上
-                if all(last_5['Close'] > last_5['SMA_50']):
-                    results['5d_above_20ma'] += 1
-
-                # 50MA > 150MA
-                if latest['SMA_50'] > latest['SMA_150']:
-                    results['20ma_above_50ma'] += 1
-
-                # 150MA > 200MA
-                if latest['SMA_150'] > latest['SMA_200']:
-                    results['50ma_above_200ma'] += 1
-            except Exception as e:
-                print(f"Error processing {ticker}: {e}")
-                continue
-
-        # パーセンテージに変換
-        if results['total'] > 0:
-            total = results['total']
-            results['5d_above_20ma_pct'] = (results['5d_above_20ma'] / total) * 100
-            results['20ma_above_50ma_pct'] = (results['20ma_above_50ma'] / total) * 100
-            results['50ma_above_200ma_pct'] = (results['50ma_above_200ma'] / total) * 100
-        else:
-            results['5d_above_20ma_pct'] = 0
-            results['20ma_above_50ma_pct'] = 0
-            results['50ma_above_200ma_pct'] = 0
-
-        return results
-
-    def calculate_sector_performance(self) -> pd.DataFrame:
-        """
-        セクターパフォーマンスを計算
-        """
-        results = []
-
-        # ベンチマーク (SPY)
-        try:
-            spy_df, _ = fetch_stock_data('SPY', period='2y')
-            if spy_df is None:
-                return pd.DataFrame()
-
-            spy_indicators = calculate_all_basic_indicators(spy_df)
-        except Exception as e:
-            print(f"Error fetching SPY benchmark: {e}")
-            return pd.DataFrame()
-
-        for ticker, name in self.sectors.items():
-            try:
-                df, _ = fetch_stock_data(ticker, period='2y')
-
-                if df is None or len(df) < 252:
-                    continue
-
-                indicators_df = calculate_all_basic_indicators(df)
-
-                if len(indicators_df) < 252:
-                    continue
+                # インジケーター計算
+                indicators_df = calculate_all_basic_indicators(df.copy())
+                # 10MA, 20MAを追加
+                indicators_df['SMA_10'] = indicators_df['Close'].rolling(window=10).mean()
+                indicators_df['SMA_20'] = indicators_df['Close'].rolling(window=20).mean()
 
                 latest = indicators_df.iloc[-1]
                 current_price = latest['Close']
 
-                # 1日のパフォーマンス
-                prev_close = indicators_df['Close'].iloc[-2]
-                day_pct = ((current_price - prev_close) / prev_close) * 100
+                # --- 基本情報 ---
+                price = current_price
+                day_pct = ((current_price - indicators_df['Close'].iloc[-2]) / indicators_df['Close'].iloc[-2]) * 100 if len(indicators_df) > 1 else 0
 
-                # RS Rating計算
+                # --- RS Rating ---
                 rs_calc = RSCalculator(indicators_df, spy_indicators)
-                rs_score_series = rs_calc.calculate_ibd_rs_score()
+                rs_rating_series = rs_calc.calculate_rs_rating_series()
+                rs_rating = rs_rating_series.iloc[-1] if not rs_rating_series.empty else np.nan
 
-                # 最新のRSスコアを取得
-                if len(rs_score_series) > 0:
-                    rs_score = rs_score_series.iloc[-1]
+                # --- Relative Strength (vs SPY, 1-Year) ---
+                spy_perf_1y = ((spy_indicators['Close'].iloc[-1] - spy_indicators['Close'].iloc[-252]) / spy_indicators['Close'].iloc[-252]) * 100
+                ticker_perf_1y = ((current_price - indicators_df['Close'].iloc[-252]) / indicators_df['Close'].iloc[-252]) * 100
+                relative_strength = ticker_perf_1y - spy_perf_1y
 
-                    # パーセンタイルレーティングを計算（0-100のスケール）
-                    # 簡易版: rsスコアを0-100にマッピング
-                    rs_rating = min(100, max(0, rs_score))
-                else:
-                    rs_rating = 50.0
+                # --- Performance ---
+                ytd_start_price = indicators_df.loc[indicators_df.index >= f"{self.current_date.year}-01-01"]['Close'].iloc[0] if not indicators_df.loc[indicators_df.index >= f"{self.current_date.year}-01-01"].empty else np.nan
+                ytd_pct = ((current_price - ytd_start_price) / ytd_start_price) * 100 if not pd.isna(ytd_start_price) else 0
 
-                # Relative Strength (簡易版)
-                spy_current = spy_indicators['Close'].iloc[-1]
-                spy_prev = spy_indicators['Close'].iloc[-252]
-                ticker_prev = indicators_df['Close'].iloc[-252]
+                week_ago_price = indicators_df['Close'].iloc[-6] if len(indicators_df) >= 6 else np.nan # 5 trading days ago is index -6
+                week_pct = ((current_price - week_ago_price) / week_ago_price) * 100 if not pd.isna(week_ago_price) else 0
 
-                spy_perf = ((spy_current - spy_prev) / spy_prev) * 100
-                ticker_perf = ((current_price - ticker_prev) / ticker_prev) * 100
-                relative_strength = ticker_perf - spy_perf
+                month_ago_price = indicators_df['Close'].iloc[-22] if len(indicators_df) >= 22 else np.nan # 21 trading days ago
+                month_pct = ((current_price - month_ago_price) / month_ago_price) * 100 if not pd.isna(month_ago_price) else 0
+
+                year_ago_price = indicators_df['Close'].iloc[-252] if len(indicators_df) >= 252 else np.nan
+                year_pct = ((current_price - year_ago_price) / year_ago_price) * 100 if not pd.isna(year_ago_price) else 0
+
+                # --- Highs ---
+                high_52w = indicators_df['High'].tail(252).max()
+                from_high_pct = ((current_price - high_52w) / high_52w) * 100 if high_52w > 0 else 0
+
+                # --- Trend Indicators (MAs) ---
+                trends = {
+                    'above_10ma': current_price > latest.get('SMA_10', np.nan),
+                    'above_20ma': current_price > latest.get('SMA_20', np.nan),
+                    'above_50ma': current_price > latest.get('SMA_50', np.nan),
+                    'above_200ma': current_price > latest.get('SMA_200', np.nan),
+                    '20ma_above_50ma': latest.get('SMA_20', np.nan) > latest.get('SMA_50', np.nan),
+                    '50ma_above_200ma': latest.get('SMA_50', np.nan) > latest.get('SMA_200', np.nan),
+                }
 
                 results.append({
-                    'Sector': name,
-                    'Ticker': ticker,
-                    'Price': current_price,
-                    '1D %': day_pct,
+                    'ticker': ticker,
+                    'index': name,
+                    'price': price,
+                    '% 1D': day_pct,
                     'Relative Strength': relative_strength,
-                    'RS Rating': rs_rating
+                    'RS STS %': rs_rating,
+                    '% YTD': ytd_pct,
+                    '% 1W': week_pct,
+                    '% 1M': month_pct,
+                    '% 1Y': year_pct,
+                    '% From 52W High': from_high_pct,
+                    '10MA': trends['above_10ma'],
+                    '20MA': trends['above_20ma'],
+                    '50MA': trends['above_50ma'],
+                    '200MA': trends['above_200ma'],
+                    '20>50MA': trends['20ma_above_50ma'],
+                    '50>200MA': trends['50ma_above_200ma'],
                 })
             except Exception as e:
-                print(f"Error processing sector {ticker}: {e}")
+                print(f"Error processing ticker {ticker}: {e}")
                 continue
 
         return pd.DataFrame(results)
@@ -746,6 +625,7 @@ class MarketDashboard:
         # 1. Market Exposure
         print("\n### MARKET EXPOSURE (12要因評価) ###")
         exposure = self.calculate_market_exposure()
+        self.update_market_exposure_history(exposure['score'])
         print(f"Score: {exposure['score']:.2f}%")
         print(f"Level: {exposure['level']}")
         print(f"Positive Factors: {exposure.get('positive_count', 0)}/{exposure.get('total_factors', 12)}")
@@ -769,40 +649,18 @@ class MarketDashboard:
             status = "✓" if val['is_positive'] else "✗"
             print(f"    {status} {key}: {val['count']} ({val['ratio']})")
 
-        # 2. Market Performance Overview
-        print("\n### MARKET PERFORMANCE OVERVIEW ###")
-        performance = self.calculate_market_performance()
-        if not performance.empty:
-            print(performance.to_string(index=False))
-        else:
-            print("No performance data available")
+        # 2. Market, Sectors, Macro Performance
+        print("\n### Calculating Market Performance ###")
+        market_performance = self.calculate_ticker_performance(self.market_tickers)
+        print(market_performance.to_string(index=False))
 
-        # 3. VIX Analysis
-        print("\n### VIX ANALYSIS ###")
-        vix = self.get_vix_analysis()
-        if vix:
-            print(f"Current VIX: {vix['current']:.2f}")
-            print(f"Interpretation: {vix['interpretation']}")
-            print(f"52W High: {vix['52w_high']:.2f}")
-            print(f"52W Low: {vix['52w_low']:.2f}")
-        else:
-            print("VIX data not available")
+        print("\n### Calculating Sectors Performance ###")
+        sectors_performance = self.calculate_ticker_performance(self.sectors_tickers)
+        print(sectors_performance.to_string(index=False))
 
-        # 4. Sector Performance
-        print("\n### SECTOR PERFORMANCE ###")
-        sectors = self.calculate_sector_performance()
-        if not sectors.empty:
-            print(sectors.to_string(index=False))
-        else:
-            print("No sector data available")
-
-        # 5. Power Law Indicators (サンプル銘柄で計算)
-        print("\n### POWER LAW INDICATORS ###")
-        power_law = self.calculate_power_law_indicators(self.screening_tickers)
-        print(f"5 Days Above 50MA: {power_law.get('5d_above_20ma_pct', 0):.1f}%")
-        print(f"50MA Above 150MA: {power_law.get('20ma_above_50ma_pct', 0):.1f}%")
-        print(f"150MA Above 200MA: {power_law.get('50ma_above_200ma_pct', 0):.1f}%")
-        print(f"Total stocks analyzed: {power_law.get('total', 0)}")
+        print("\n### Calculating Macro Performance ###")
+        macro_performance = self.calculate_ticker_performance(self.macro_tickers)
+        print(macro_performance.to_string(index=False))
 
         # 6. Oratnek Screeners（追加）
         screener_results = self.run_oratnek_screeners()
@@ -824,7 +682,8 @@ class MarketDashboard:
         print("Dashboard generation complete!")
         print("=" * 80)
 
-        return exposure, performance, vix, sectors, power_law, screener_results
+        return (exposure, market_performance, sectors_performance,
+                macro_performance, screener_results)
 
 
 def main():
