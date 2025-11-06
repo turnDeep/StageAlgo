@@ -69,6 +69,8 @@ class MarketDashboard:
             'TLT': 'Bond 20+ Year'
         }
 
+        self.vix_ticker = '^VIX'
+
         # データキャッシュ
         self.data_cache = {}
 
