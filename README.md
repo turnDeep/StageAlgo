@@ -223,6 +223,118 @@ docker-compose up -d
 docker-compose exec app bash
 ```
 
+## Oratnek Screener - SQLiteベースの高速スクリーニング
+
+Oratnek Screenerは、IBD (Investor's Business Daily) 手法に基づく6つのスクリーニングリストを提供します。
+**Version 2.0では、SQLiteベースのデータ管理とマルチプロセス化により大幅に高速化されました。**
+
+### 主な改善点
+
+- **SQLiteキャッシュ**: FinancialModelingPrepからダウンロードしたデータをSQLiteに保存し、2回目以降は差分更新のみを実行
+- **マルチプロセス化**: 最大10並列で銘柄データを取得・計算（`ORATNEK_MAX_WORKERS`で調整可能）
+- **バッチ処理**: 50銘柄ずつバッチ処理して効率化（`ORATNEK_BATCH_SIZE`で調整可能）
+- **移動平均の事前計算**: SQLiteに保存時にSMA/EMAを計算済み
+
+### 6つのスクリーニングリスト
+
+1. **Momentum 97**: 1M/3M/6Mすべてで上位3%のモメンタム銘柄
+2. **Explosive EPS Growth**: RS Rating ≥ 80、高成長予想の銘柄
+3. **Up on Volume**: 出来高を伴って上昇している機関投資家注目銘柄
+4. **Top 2% RS Rating**: RS Rating上位2%かつトレンドが完璧な銘柄
+5. **4% Bullish Yesterday**: 昨日4%以上上昇した銘柄
+6. **Healthy Chart Watch List**: 健全なチャート形状を持つ高品質銘柄
+
+### 使用方法
+
+#### 基本的な使い方
+
+```python
+from oratnek_screeners import run_oratnek_screener
+
+# デフォルト銘柄でスクリーニング実行（マルチプロセス有効）
+results = run_oratnek_screener()
+
+# 結果の確認
+for screen_name, df in results.items():
+    print(f"{screen_name}: {len(df)} stocks")
+    print(df.head())
+```
+
+#### カスタム銘柄リストでの実行
+
+```python
+# カスタム銘柄リスト
+my_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA']
+
+# スクリーニング実行
+results = run_oratnek_screener(tickers=my_tickers, use_multiprocessing=True)
+```
+
+#### コマンドラインから実行
+
+```bash
+# マルチプロセス有効（デフォルト）
+python oratnek_screeners.py
+
+# マルチプロセス無効
+python oratnek_screeners.py --no-mp
+
+# テストスクリプト実行
+python test_oratnek_screener.py
+
+# ベンチマーク付きテスト
+python test_oratnek_screener.py --benchmark
+```
+
+### 環境変数
+
+`.env`ファイルに以下の変数を設定できます：
+
+```bash
+# FMP API設定
+FMP_API_KEY=your_api_key_here
+FMP_RATE_LIMIT=750  # Premium Plan: 750 req/min
+
+# Oratnek Screener設定
+ORATNEK_MAX_WORKERS=10   # 並列ワーカー数
+ORATNEK_BATCH_SIZE=50    # バッチサイズ
+```
+
+### データ保存先
+
+- **SQLiteデータベース**: `data/oratnek/oratnek_cache.db`
+  - `daily_prices`: 日次株価 + 移動平均
+  - `weekly_prices`: 週次株価
+  - `fundamental_data`: ファンダメンタル情報
+  - `data_metadata`: データメタ情報
+
+- **スクリーニング結果**: `data/oratnek/results/`
+  - `latest.json`: 最新のスクリーニング結果
+  - `screening_YYYYMMDD_HHMMSS.json`: タイムスタンプ付き結果
+  - `screener_[name]_YYYYMMDD.csv`: 各スクリーナーのCSV
+
+### パフォーマンス
+
+- **初回実行**: 全データをダウンロード（時間がかかる）
+- **2回目以降**: 差分更新のみ（高速）
+- **マルチプロセス**: 約5-10倍の高速化（銘柄数とワーカー数による）
+
+### Market Dashboardとの統合
+
+Market Dashboardから自動的にOratnekスクリーニングが実行されます：
+
+```python
+from market_dashboard import MarketDashboard
+
+# スクリーニング有効（デフォルト）
+dashboard = MarketDashboard()
+dashboard.run()
+
+# スクリーニング無効
+dashboard = MarketDashboard(enable_screeners=False)
+dashboard.run()
+```
+
 ## プロジェクト構造
 
 **Version 2.0 - レイヤードアーキテクチャ採用**

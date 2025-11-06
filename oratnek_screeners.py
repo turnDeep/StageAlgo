@@ -10,18 +10,31 @@ IBD (Investor's Business Daily) 手法に基づく6つのスクリーニング�
 5. 4% Bullish Yesterday - 昨日4%以上上昇
 6. Healthy Chart Watch List - 健全なチャート形状を持つ高品質銘柄
 
-yfinanceからFinancialModelingPrep APIに移行しました。
+SQLiteベースのデータ管理とマルチプロセス化により高速化。
 """
 
+import os
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
+import concurrent.futures
+import logging
 
-from data_fetcher import fetch_stock_data
-from fmp_data_fetcher import FMPDataFetcher
+from oratnek_data_manager import OratnekDataManager
 from indicators import calculate_all_basic_indicators
 from rs_calculator import RSCalculator
+
+# ロギング設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# マルチプロセス設定
+MAX_WORKERS = int(os.getenv('ORATNEK_MAX_WORKERS', '10'))
+BATCH_SIZE = int(os.getenv('ORATNEK_BATCH_SIZE', '50'))
 
 
 class IBDIndicators:
@@ -179,12 +192,14 @@ class OratnekScreener:
     6. Healthy Chart Watch List
     """
 
-    def __init__(self, tickers: List[str]):
+    def __init__(self, tickers: List[str], data_manager: Optional[OratnekDataManager] = None):
         """
         Args:
             tickers: スクリーニング対象の銘柄リスト
+            data_manager: データマネージャー（Noneの場合は新規作成）
         """
         self.tickers = tickers
+        self.data_manager = data_manager or OratnekDataManager()
         self.data_cache = {}
         self.benchmark_data = None
 
@@ -194,17 +209,26 @@ class OratnekScreener:
     def _load_benchmark(self):
         """ベンチマーク（SPY）データを読み込む"""
         try:
-            spy_df, _ = fetch_stock_data('SPY', period='2y')
-            if spy_df is not None:
-                self.benchmark_data = calculate_all_basic_indicators(spy_df)
+            logger.info("Loading SPY benchmark data...")
+            result = self.data_manager.get_stock_data_with_cache('SPY', lookback_years=10)
+            if result:
+                spy_df, _ = result
+                if spy_df is not None and not spy_df.empty:
+                    # 列名を大文字に変換（indicators.pyとの互換性）
+                    spy_df_upper = spy_df.copy()
+                    spy_df_upper.columns = [col.capitalize() for col in spy_df_upper.columns]
+                    self.benchmark_data = spy_df_upper
+                    logger.info(f"Benchmark loaded: {len(self.benchmark_data)} days")
+                else:
+                    logger.warning("Warning: Could not load SPY benchmark data")
             else:
-                print("Warning: Could not load SPY benchmark data")
+                logger.warning("Warning: SPY data not available")
         except Exception as e:
-            print(f"Error loading benchmark: {e}")
+            logger.error(f"Error loading benchmark: {e}", exc_info=True)
 
     def _get_stock_data(self, ticker: str) -> Optional[Tuple[pd.DataFrame, Dict]]:
         """
-        株価データと基本指標を取得
+        株価データと基本指標を取得（SQLiteから）
 
         Returns:
             (indicators_df, metrics_dict) or None
@@ -213,11 +237,21 @@ class OratnekScreener:
             return self.data_cache[ticker]
 
         try:
-            df, _ = fetch_stock_data(ticker, period='2y')
+            # SQLiteからデータ取得
+            result = self.data_manager.get_stock_data_with_cache(ticker, lookback_years=2)
+            if result is None:
+                return None
+
+            df, _ = result
             if df is None or len(df) < 100:
                 return None
 
-            indicators_df = calculate_all_basic_indicators(df)
+            # 列名を大文字に変換（indicators.pyとの互換性）
+            df_upper = df.copy()
+            df_upper.columns = [col.capitalize() if col.lower() in ['open', 'high', 'low', 'close', 'volume'] else col for col in df_upper.columns]
+
+            # 移動平均は既にSQLiteに保存されているが、indicators.pyの他の指標も追加
+            indicators_df = calculate_all_basic_indicators(df_upper)
 
             if len(indicators_df) < 100:
                 return None
@@ -231,11 +265,11 @@ class OratnekScreener:
                 'volume': latest['Volume'],
                 'avg_volume_50d': indicators_df['Volume'].tail(50).mean(),
                 'avg_volume_90d': indicators_df['Volume'].tail(90).mean(),
-                'sma_10': latest.get('SMA_10', 0),
-                'sma_21': latest.get('SMA_21', 0),
-                'sma_50': latest.get('SMA_50', 0),
-                'sma_150': latest.get('SMA_150', 0),
-                'sma_200': latest.get('SMA_200', 0),
+                'sma_10': latest.get('SMA_10', latest.get('sma_10', 0)),
+                'sma_21': latest.get('SMA_21', latest.get('sma_21', 0)),
+                'sma_50': latest.get('SMA_50', latest.get('sma_50', 0)),
+                'sma_150': latest.get('SMA_150', latest.get('sma_150', 0)),
+                'sma_200': latest.get('SMA_200', latest.get('sma_200', 0)),
             }
 
             # RS Rating計算
@@ -299,7 +333,7 @@ class OratnekScreener:
             return result
 
         except Exception as e:
-            print(f"Error processing {ticker}: {e}")
+            logger.error(f"Error processing {ticker}: {e}", exc_info=True)
             return None
 
     def screen_momentum_97(self) -> pd.DataFrame:
@@ -626,17 +660,64 @@ class OratnekScreener:
 
         return df
 
-    def run_all_screens(self) -> Dict[str, pd.DataFrame]:
+    def run_all_screens(self, use_multiprocessing: bool = True) -> Dict[str, pd.DataFrame]:
         """
         全スクリーニングを実行
+
+        Args:
+            use_multiprocessing: マルチプロセス化を使用するか
 
         Returns:
             各スクリーニング結果の辞書
         """
-        print("\n" + "="*80)
-        print("ORATNEK SCREENER - Running All Screens")
-        print("="*80)
+        logger.info("="*80)
+        logger.info("ORATNEK SCREENER - Running All Screens")
+        logger.info("="*80)
 
+        start_time = datetime.now()
+
+        if use_multiprocessing:
+            logger.info(f"Using multiprocessing with {MAX_WORKERS} workers...")
+            results = self._run_screens_parallel()
+        else:
+            logger.info("Running screens sequentially...")
+            results = {
+                'momentum_97': self.screen_momentum_97(),
+                'explosive_eps': self.screen_explosive_eps_growth(),
+                'up_on_volume': self.screen_up_on_volume(),
+                'top_2_rs': self.screen_top_2_percent_rs(),
+                'bullish_4pct': self.screen_4_percent_bullish_yesterday(),
+                'healthy_chart': self.screen_healthy_chart_watchlist(),
+            }
+
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+
+        logger.info("="*80)
+        logger.info("SCREENING SUMMARY")
+        logger.info("="*80)
+        for name, df in results.items():
+            logger.info(f"{name:25s}: {len(df):3d} stocks")
+        logger.info(f"\nTotal execution time: {duration:.2f} seconds")
+        logger.info("="*80)
+
+        # 結果を保存
+        self._save_results(results, duration)
+
+        return results
+
+    def _run_screens_parallel(self) -> Dict[str, pd.DataFrame]:
+        """
+        並列処理で全スクリーニングを実行
+
+        Returns:
+            各スクリーニング結果の辞書
+        """
+        # まず全銘柄のデータをバッチ処理で読み込み
+        logger.info(f"Preloading data for {len(self.tickers)} tickers...")
+        self._preload_data_parallel()
+
+        # 各スクリーニングを実行
         results = {
             'momentum_97': self.screen_momentum_97(),
             'explosive_eps': self.screen_explosive_eps_growth(),
@@ -646,14 +727,76 @@ class OratnekScreener:
             'healthy_chart': self.screen_healthy_chart_watchlist(),
         }
 
-        print("\n" + "="*80)
-        print("SCREENING SUMMARY")
-        print("="*80)
-        for name, df in results.items():
-            print(f"{name:25s}: {len(df):3d} stocks")
-        print("="*80)
-
         return results
+
+    def _preload_data_parallel(self):
+        """
+        並列処理で全銘柄のデータを事前読み込み
+
+        HWBの設計を参考に、バッチ処理とスレッドプールを使用
+        """
+        total = len(self.tickers)
+        processed = 0
+
+        for i in range(0, total, BATCH_SIZE):
+            batch = self.tickers[i:i + BATCH_SIZE]
+            logger.info(f"Processing batch {i//BATCH_SIZE + 1}/{(total + BATCH_SIZE - 1)//BATCH_SIZE} ({len(batch)} tickers)...")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_ticker = {
+                    executor.submit(self._get_stock_data, ticker): ticker
+                    for ticker in batch
+                }
+
+                for future in concurrent.futures.as_completed(future_to_ticker):
+                    ticker = future_to_ticker[future]
+                    processed += 1
+                    try:
+                        result = future.result()
+                        if result:
+                            logger.debug(f"[{processed}/{total}] {ticker}: Data loaded")
+                        else:
+                            logger.debug(f"[{processed}/{total}] {ticker}: No data")
+                    except Exception as exc:
+                        logger.error(f"[{processed}/{total}] {ticker}: Error - {exc}")
+
+        logger.info(f"Data preloading completed. Cached {len(self.data_cache)} tickers.")
+
+    def _save_results(self, results: Dict[str, pd.DataFrame], duration: float):
+        """
+        スクリーニング結果を保存
+
+        Args:
+            results: スクリーニング結果
+            duration: 実行時間（秒）
+        """
+        try:
+            summary = {
+                'scan_date': datetime.now().strftime('%Y-%m-%d'),
+                'scan_time': datetime.now().strftime('%H:%M:%S'),
+                'scan_duration_seconds': duration,
+                'total_tickers': len(self.tickers),
+                'summary': {
+                    name: {
+                        'count': len(df),
+                        'tickers': df['ticker'].tolist() if 'ticker' in df.columns else []
+                    }
+                    for name, df in results.items()
+                }
+            }
+
+            self.data_manager.save_screening_results(summary)
+
+            # 各スクリーニング結果をCSVに保存
+            for name, df in results.items():
+                if not df.empty:
+                    csv_filename = f"screener_{name}_{datetime.now().strftime('%Y%m%d')}.csv"
+                    csv_path = self.data_manager.results_dir / csv_filename
+                    df.to_csv(csv_path, index=False)
+                    logger.info(f"Saved {name} to {csv_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to save results: {e}", exc_info=True)
 
 
 def get_default_tickers() -> List[str]:
@@ -678,18 +821,48 @@ def get_default_tickers() -> List[str]:
     ]
 
 
+def run_oratnek_screener(
+    tickers: Optional[List[str]] = None,
+    use_multiprocessing: bool = True,
+    data_manager: Optional[OratnekDataManager] = None
+) -> Dict[str, pd.DataFrame]:
+    """
+    Oratnekスクリーナーを実行
+
+    Args:
+        tickers: 対象銘柄リスト（Noneの場合はデフォルト銘柄）
+        use_multiprocessing: マルチプロセス化を使用するか
+        data_manager: データマネージャー（Noneの場合は新規作成）
+
+    Returns:
+        スクリーニング結果の辞書
+    """
+    if tickers is None:
+        tickers = get_default_tickers()
+
+    logger.info(f"Starting Oratnek Screener with {len(tickers)} tickers...")
+
+    screener = OratnekScreener(tickers, data_manager)
+    results = screener.run_all_screens(use_multiprocessing=use_multiprocessing)
+
+    return results
+
+
 if __name__ == '__main__':
     """
     スタンドアロンテスト実行
     """
-    tickers = get_default_tickers()
+    import sys
 
-    screener = OratnekScreener(tickers)
-    results = screener.run_all_screens()
+    # コマンドライン引数でマルチプロセス化を制御
+    use_mp = '--no-mp' not in sys.argv
 
-    # 結果をCSVに保存
-    for name, df in results.items():
-        if not df.empty:
-            filename = f"screener_{name}.csv"
-            df.to_csv(filename, index=False)
-            print(f"\nSaved {name} results to {filename}")
+    logger.info("="*80)
+    logger.info("ORATNEK SCREENER - Standalone Test")
+    logger.info(f"Multiprocessing: {'Enabled' if use_mp else 'Disabled'}")
+    logger.info("="*80)
+
+    # デフォルト銘柄でスクリーニング実行
+    results = run_oratnek_screener(use_multiprocessing=use_mp)
+
+    logger.info("\nScreening completed successfully!")
