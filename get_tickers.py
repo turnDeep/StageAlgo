@@ -174,7 +174,7 @@ def get_and_save_tickers():
         fetcher = FMPTickerFetcher()
 
         # 取引所リスト
-        exchanges = ['nasdaq', 'nyse', 'amex']
+        exchanges = ['nasdaq', 'nyse']
 
         print(f"\n取得対象取引所: {', '.join([e.upper() for e in exchanges])}")
         print(f"フィルター条件:")
