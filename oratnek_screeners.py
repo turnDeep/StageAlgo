@@ -203,6 +203,7 @@ class OratnekScreener:
         self.data_manager = data_manager or OratnekDataManager()
         self.data_cache = {}
         self.benchmark_data = None
+        self.industry_rs_cache = {}  # Industry Group RSキャッシュ
 
         # ベンチマーク（SPY）を取得
         self._load_benchmark()
@@ -226,6 +227,84 @@ class OratnekScreener:
                 logger.warning("Warning: SPY data not available")
         except Exception as e:
             logger.error(f"Error loading benchmark: {e}", exc_info=True)
+
+    def calculate_industry_group_rs(self) -> Dict[str, str]:
+        """
+        各業種（Industry）のRelative Strengthを計算し、A/B/C/D/Eで評価
+
+        Returns:
+            {industry_name: 'A'|'B'|'C'|'D'|'E'} の辞書
+        """
+        if self.industry_rs_cache:
+            return self.industry_rs_cache
+
+        logger.info("Calculating Industry Group RS...")
+
+        industry_performance = {}
+
+        # 各ティッカーの業種とパフォーマンスを収集
+        for ticker in tqdm(self.tickers, desc="Industry RS計算中", unit="ticker"):
+            data = self._get_stock_data(ticker)
+            if data is None:
+                continue
+
+            _, metrics = data
+            industry = metrics.get('industry', '').strip()
+
+            if not industry or industry == '':
+                continue
+
+            # 業種ごとのリターンを集計（3ヶ月リターンを使用）
+            returns_3m = metrics.get('returns_3m', 0)
+
+            if industry not in industry_performance:
+                industry_performance[industry] = []
+
+            industry_performance[industry].append(returns_3m)
+
+        # 各業種の平均リターンを計算
+        industry_avg_returns = {}
+        for industry, returns_list in industry_performance.items():
+            if len(returns_list) > 0:
+                industry_avg_returns[industry] = np.mean(returns_list)
+
+        if not industry_avg_returns:
+            logger.warning("No industry performance data available")
+            return {}
+
+        # 業種をパフォーマンスでランキング
+        sorted_industries = sorted(
+            industry_avg_returns.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # パーセンタイルでA/B/C/D/Eに分類
+        total_industries = len(sorted_industries)
+        industry_ratings = {}
+
+        for i, (industry, _) in enumerate(sorted_industries):
+            percentile = (i / total_industries) * 100
+
+            if percentile <= 20:
+                rating = 'A'  # 上位20%
+            elif percentile <= 40:
+                rating = 'B'  # 上位40%
+            elif percentile <= 60:
+                rating = 'C'  # 中位60%
+            elif percentile <= 80:
+                rating = 'D'  # 下位80%
+            else:
+                rating = 'E'  # 下位20%
+
+            industry_ratings[industry] = rating
+
+        logger.info(f"Calculated RS ratings for {len(industry_ratings)} industries")
+
+        # キャッシュに保存
+        self.industry_rs_cache = industry_ratings
+
+        return industry_ratings
 
     def _get_stock_data(self, ticker: str) -> Optional[Tuple[pd.DataFrame, Dict]]:
         """
@@ -349,6 +428,13 @@ class OratnekScreener:
                 metrics['industry'] = ''
                 metrics['eps_growth_last_qtr'] = 0
                 metrics['eps_est_cur_qtr_growth'] = 0
+
+            # Industry Group RS（キャッシュから取得）
+            industry = metrics['industry']
+            if industry and self.industry_rs_cache:
+                metrics['industry_group_rs'] = self.industry_rs_cache.get(industry, 'C')
+            else:
+                metrics['industry_group_rs'] = 'C'  # デフォルト: 中立
 
             result = (indicators_df, metrics)
             self.data_cache[ticker] = result
@@ -657,6 +743,7 @@ class OratnekScreener:
         - RS Line新高値
         - RS Rating ≥ 90 (上位10%)
         - A/D Rating: A or B
+        - Industry Group RS: A or B
         - Comp Rating ≥ 80
         - 50日平均出来高 ≥ 100,000
 
@@ -666,6 +753,10 @@ class OratnekScreener:
         results = []
 
         logger.info("\n[Healthy Chart Watch List] Screening...")
+
+        # Industry Group RSを事前計算（初回のみ）
+        if not self.industry_rs_cache:
+            self.calculate_industry_group_rs()
 
         for ticker in tqdm(self.tickers, desc="💚 Healthy Chart", unit="ticker"):
             data = self._get_stock_data(ticker)
@@ -682,6 +773,7 @@ class OratnekScreener:
                 metrics['rs_line_new_high'] and
                 metrics['rs_rating'] >= 90 and
                 metrics['ad_rating'] in ['A', 'B'] and
+                metrics['industry_group_rs'] in ['A', 'B'] and  # Industry Group RS追加
                 metrics['comp_rating'] >= 80 and
                 metrics['avg_volume_50d'] >= 100_000):
 
@@ -690,6 +782,8 @@ class OratnekScreener:
                     'price': metrics['price'],
                     'rs_rating': metrics['rs_rating'],
                     'ad_rating': metrics['ad_rating'],
+                    'industry': metrics['industry'],
+                    'industry_group_rs': metrics['industry_group_rs'],
                     'comp_rating': metrics['comp_rating'],
                     'sma_50': metrics['sma_50'],
                     'sma_150': metrics['sma_150'],
