@@ -328,6 +328,28 @@ class OratnekScreener:
             # RS Line新高値チェック（簡易版）
             metrics['rs_line_new_high'] = (metrics['rs_rating'] >= 90)
 
+            # ファンダメンタルデータ（市場キャップ、セクター、EPS成長率）を追加
+            fundamental_data = self.data_manager.get_fundamental_data(ticker)
+            if fundamental_data:
+                # 市場キャップ（単位: million）
+                market_cap = fundamental_data.get('market_cap')
+                metrics['market_cap'] = market_cap / 1_000_000 if market_cap else 0
+
+                # セクター情報
+                metrics['sector'] = fundamental_data.get('sector', '')
+                metrics['industry'] = fundamental_data.get('industry', '')
+
+                # EPS成長率
+                metrics['eps_growth_last_qtr'] = fundamental_data.get('eps_growth_last_qtr', 0) or 0
+                metrics['eps_est_cur_qtr_growth'] = fundamental_data.get('eps_est_cur_qtr_growth', 0) or 0
+            else:
+                # デフォルト値
+                metrics['market_cap'] = 0
+                metrics['sector'] = ''
+                metrics['industry'] = ''
+                metrics['eps_growth_last_qtr'] = 0
+                metrics['eps_est_cur_qtr_growth'] = 0
+
             result = (indicators_df, metrics)
             self.data_cache[ticker] = result
 
@@ -395,7 +417,7 @@ class OratnekScreener:
 
         条件:
         - RS Rating ≥ 80
-        - EPS成長予想 ≥ 100% (※データ制約により、RS Ratingで代用)
+        - EPS成長予想 ≥ 100% (今四半期予想YoY成長率)
         - 50日平均出来高 ≥ 100,000
         - 価格 ≥ 50日移動平均
 
@@ -414,7 +436,11 @@ class OratnekScreener:
             _, metrics = data
 
             # スクリーニング条件
+            # EPS予想成長率が利用可能な場合はそれを使用、なければRS Ratingのみで判定
+            eps_growth_ok = (metrics['eps_est_cur_qtr_growth'] >= 100) if metrics['eps_est_cur_qtr_growth'] else True
+
             if (metrics['rs_rating'] >= 80 and
+                eps_growth_ok and
                 metrics['avg_volume_50d'] >= 100_000 and
                 metrics['price'] >= metrics['sma_50']):
 
@@ -422,6 +448,7 @@ class OratnekScreener:
                     'ticker': ticker,
                     'price': metrics['price'],
                     'rs_rating': metrics['rs_rating'],
+                    'eps_est_cur_qtr_growth': metrics['eps_est_cur_qtr_growth'],
                     'avg_volume_50d': metrics['avg_volume_50d'],
                     'price_vs_sma50_pct': ((metrics['price'] / metrics['sma_50'] - 1) * 100) if metrics['sma_50'] > 0 else 0,
                 })
@@ -430,7 +457,7 @@ class OratnekScreener:
             return pd.DataFrame()
 
         df = pd.DataFrame(results)
-        df = df.sort_values('rs_rating', ascending=False)
+        df = df.sort_values('eps_est_cur_qtr_growth', ascending=False)
 
         logger.info(f"  → Found {len(df)} stocks")
 
@@ -445,7 +472,9 @@ class OratnekScreener:
         - 出来高が50日平均の120%以上
         - 価格 ≥ $10
         - 50日平均出来高 ≥ 100,000
+        - 時価総額 ≥ $250M
         - RS Rating ≥ 80
+        - EPS成長率（直近四半期） ≥ 20%
         - A/D Rating: A, B, or C
 
         Returns:
@@ -467,7 +496,9 @@ class OratnekScreener:
                 metrics['vol_change_pct'] >= 20 and  # 120%以上
                 metrics['price'] >= 10 and
                 metrics['avg_volume_50d'] >= 100_000 and
+                metrics['market_cap'] >= 250 and  # $250M以上
                 metrics['rs_rating'] >= 80 and
+                metrics['eps_growth_last_qtr'] >= 20 and  # EPS成長率 ≥ 20%
                 metrics['ad_rating'] in ['A', 'B', 'C']):
 
                 results.append({
@@ -475,6 +506,8 @@ class OratnekScreener:
                     'price': metrics['price'],
                     'price_change_pct': metrics['price_change_pct'],
                     'vol_change_pct': metrics['vol_change_pct'],
+                    'market_cap': metrics['market_cap'],
+                    'eps_growth_last_qtr': metrics['eps_growth_last_qtr'],
                     'rs_rating': metrics['rs_rating'],
                     'ad_rating': metrics['ad_rating'],
                     'avg_volume_50d': metrics['avg_volume_50d'],
@@ -499,6 +532,7 @@ class OratnekScreener:
         - MA順序: 10日 > 21日 > 50日
         - 50日平均出来高 ≥ 100,000
         - 当日出来高 ≥ 100,000
+        - セクター除外: Healthcare/Medical
 
         Returns:
             該当銘柄のDataFrame
@@ -514,6 +548,11 @@ class OratnekScreener:
 
             _, metrics = data
 
+            # セクター除外: Healthcare/Medical
+            sector_lower = metrics.get('sector', '').lower()
+            if 'health' in sector_lower or 'medical' in sector_lower:
+                continue
+
             # スクリーニング条件
             if (metrics['rs_rating'] >= 98 and
                 metrics['sma_10'] > metrics['sma_21'] and
@@ -525,6 +564,7 @@ class OratnekScreener:
                     'ticker': ticker,
                     'price': metrics['price'],
                     'rs_rating': metrics['rs_rating'],
+                    'sector': metrics['sector'],
                     'sma_10': metrics['sma_10'],
                     'sma_21': metrics['sma_21'],
                     'sma_50': metrics['sma_50'],
@@ -548,6 +588,8 @@ class OratnekScreener:
         条件:
         - 昨日4%以上上昇
         - 価格 ≥ $1
+        - 時価総額 > $250M
+        - 出来高 > 100K
         - 相対出来高 > 1.0
         - 寄り高から更に上昇
         - 90日平均出来高 > 100,000
@@ -578,6 +620,8 @@ class OratnekScreener:
             # スクリーニング条件
             if (yesterday_change > 4.0 and
                 metrics['price'] >= 1.0 and
+                metrics['market_cap'] > 250 and  # $250M以上
+                metrics['volume'] > 100_000 and  # 当日出来高 > 100K
                 metrics['rel_volume'] > 1.0 and
                 metrics['change_from_open_pct'] > 0 and
                 metrics['avg_volume_90d'] > 100_000):
@@ -585,7 +629,9 @@ class OratnekScreener:
                 results.append({
                     'ticker': ticker,
                     'price': metrics['price'],
+                    'market_cap': metrics['market_cap'],
                     'yesterday_change_pct': yesterday_change,
+                    'volume': metrics['volume'],
                     'rel_volume': metrics['rel_volume'],
                     'change_from_open_pct': metrics['change_from_open_pct'],
                     'avg_volume_90d': metrics['avg_volume_90d'],

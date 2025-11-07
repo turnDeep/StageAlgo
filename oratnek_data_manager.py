@@ -128,6 +128,8 @@ class OratnekDataManager:
                         pe_ratio REAL,
                         revenue_growth_yoy REAL,
                         earnings_growth_yoy REAL,
+                        eps_growth_last_qtr REAL,
+                        eps_est_cur_qtr_growth REAL,
                         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                     """)
@@ -459,6 +461,9 @@ class OratnekDataManager:
             if not profile and not quote:
                 return None
 
+            # EPS成長率を計算
+            eps_growth_data = self.get_eps_growth_rate(symbol)
+
             fundamental_data = {
                 'symbol': symbol,
                 'market_cap': profile.get('mktCap') or quote.get('marketCap'),
@@ -470,6 +475,10 @@ class OratnekDataManager:
                 'earnings_growth_yoy': None,
                 'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
+
+            # EPS成長率データを追加
+            if eps_growth_data:
+                fundamental_data.update(eps_growth_data)
 
             # DBに保存
             with self.db_lock:
@@ -486,6 +495,63 @@ class OratnekDataManager:
         except Exception as e:
             logger.error(f"Error getting fundamental data for '{symbol}': {e}", exc_info=True)
             return None
+
+    def get_eps_growth_rate(self, symbol: str) -> Dict:
+        """
+        四半期EPS成長率と予想EPS成長率を取得
+
+        Args:
+            symbol: 銘柄シンボル
+
+        Returns:
+            EPS成長率データの辞書
+            - eps_growth_last_qtr: 前四半期比EPS成長率 (%)
+            - eps_est_cur_qtr_growth: 今四半期予想EPS成長率 (%)
+        """
+        try:
+            # 四半期Income Statementから実績EPS成長率を計算
+            income_statements = self.fmp_fetcher.get_income_statement(symbol, period='quarter', limit=4)
+
+            eps_growth_last_qtr = None
+            if income_statements and len(income_statements) >= 2:
+                latest_eps = income_statements[0].get('eps', 0) or income_statements[0].get('epsdiluted', 0)
+                prev_eps = income_statements[1].get('eps', 0) or income_statements[1].get('epsdiluted', 0)
+
+                if prev_eps and prev_eps != 0:
+                    eps_growth_last_qtr = ((latest_eps - prev_eps) / abs(prev_eps)) * 100
+                    logger.info(f"'{symbol}': EPS growth last quarter: {eps_growth_last_qtr:.2f}%")
+
+            # Earnings Surprisesから予想EPS成長率を取得
+            eps_est_cur_qtr_growth = None
+            try:
+                earnings_data = self.fmp_fetcher.get_earnings_surprises(symbol)
+                if earnings_data and len(earnings_data) > 0:
+                    # 最新の予想EPSを取得
+                    latest_earnings = earnings_data[0]
+                    estimated_eps = latest_earnings.get('estimatedEarning')
+
+                    # 前年同期の実績EPSと比較
+                    if estimated_eps and income_statements and len(income_statements) >= 4:
+                        # 4四半期前（前年同期）のEPS
+                        year_ago_eps = income_statements[3].get('eps', 0) or income_statements[3].get('epsdiluted', 0)
+
+                        if year_ago_eps and year_ago_eps != 0:
+                            eps_est_cur_qtr_growth = ((estimated_eps - year_ago_eps) / abs(year_ago_eps)) * 100
+                            logger.info(f"'{symbol}': Estimated EPS growth (YoY): {eps_est_cur_qtr_growth:.2f}%")
+            except Exception as e:
+                logger.warning(f"'{symbol}': Could not fetch earnings estimates: {e}")
+
+            return {
+                'eps_growth_last_qtr': eps_growth_last_qtr,
+                'eps_est_cur_qtr_growth': eps_est_cur_qtr_growth
+            }
+
+        except Exception as e:
+            logger.error(f"Error calculating EPS growth for '{symbol}': {e}", exc_info=True)
+            return {
+                'eps_growth_last_qtr': None,
+                'eps_est_cur_qtr_growth': None
+            }
 
     def save_screening_results(self, results: Dict, filename: str = None):
         """
