@@ -1,139 +1,230 @@
+"""
+FinancialModelingPrep API Stock Screener を使用して純粋な個別銘柄を取得
+
+yfinanceの代わりにFMP Stock Screener APIを使用することで：
+- ETF/投資信託を自動的に除外（isEtf=false, isFund=false）
+- 複雑な文字列フィルタリングが不要
+- 処理時間を数分〜十数分から数秒に短縮
+- より正確な銘柄分類
+
+環境変数 FMP_API_KEY が必要です。
+"""
+
+import os
 import pandas as pd
-import yfinance as yf
-from curl_cffi.requests import Session
-from tqdm import tqdm
+from typing import List, Dict
 import time
+from curl_cffi.requests import Session
+from dotenv import load_dotenv
+
+# .envファイルから環境変数を読み込む
+load_dotenv()
+
+
+class FMPTickerFetcher:
+    """FMP Stock Screener API を使用してティッカーを取得"""
+
+    BASE_URL = "https://financialmodelingprep.com/api/v3/stock-screener"
+
+    def __init__(self, api_key: str = None, rate_limit: int = None):
+        """
+        Initialize FMP Ticker Fetcher
+
+        Args:
+            api_key: FMP API Key (環境変数 FMP_API_KEY から自動取得可能)
+            rate_limit: API rate limit per minute (環境変数 FMP_RATE_LIMIT から自動取得可能)
+        """
+        self.api_key = api_key or os.getenv('FMP_API_KEY')
+        if not self.api_key:
+            raise ValueError(
+                "FMP API Key is required. Set FMP_API_KEY environment variable "
+                "or pass api_key parameter."
+            )
+
+        # レート制限の設定（環境変数から取得、デフォルトは750 req/min - Premium Plan）
+        self.rate_limit = rate_limit or int(os.getenv('FMP_RATE_LIMIT', '750'))
+        self.session = Session(impersonate="chrome110")
+        self.request_timestamps = []
+
+    def _enforce_rate_limit(self):
+        """Enforce the configured API rate limit per minute."""
+        current_time = time.time()
+        # Remove timestamps older than 60 seconds
+        self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
+
+        if len(self.request_timestamps) >= self.rate_limit:
+            # Sleep until the oldest request is older than 60 seconds
+            sleep_time = 60 - (current_time - self.request_timestamps[0]) + 0.1
+            print(f"レート制限に達しました。{sleep_time:.1f}秒待機します...")
+            time.sleep(sleep_time)
+            # Trim the list again after sleeping
+            current_time = time.time()
+            self.request_timestamps = [t for t in self.request_timestamps if current_time - t < 60]
+
+        self.request_timestamps.append(current_time)
+
+    def _make_request(self, params: Dict) -> List[Dict]:
+        """
+        Make API request with error handling and rate limiting.
+
+        Args:
+            params: Query parameters
+
+        Returns:
+            JSON response as list of dicts
+        """
+        self._enforce_rate_limit()
+
+        params['apikey'] = self.api_key
+
+        try:
+            response = self.session.get(self.BASE_URL, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict) and 'Error Message' in data:
+                raise ValueError(f"API Error: {data['Error Message']}")
+            else:
+                raise ValueError(f"Unexpected response format: {data}")
+
+        except Exception as e:
+            print(f"API request failed: {e}")
+            return []
+
+    def get_stocks_by_exchange(self, exchange: str) -> List[Dict]:
+        """
+        指定された取引所から純粋な個別銘柄を取得
+
+        Args:
+            exchange: 取引所名 ('nasdaq', 'nyse', 'amex' など)
+
+        Returns:
+            銘柄情報のリスト
+        """
+        params = {
+            'isEtf': 'false',              # ETF除外
+            'isFund': 'false',             # 投資信託除外
+            'isActivelyTrading': 'true',   # 取引停止中を除外
+            'exchange': exchange.lower(),
+            'limit': 10000                 # 最大取得数
+        }
+
+        print(f"\n{exchange.upper()} の銘柄を取得中...")
+        stocks = self._make_request(params)
+        print(f"  {len(stocks)} 件の銘柄を取得しました")
+
+        return stocks
+
+    def get_all_stocks(self, exchanges: List[str] = None) -> pd.DataFrame:
+        """
+        指定された取引所から全ての個別銘柄を取得
+
+        Args:
+            exchanges: 取引所のリスト（デフォルト: ['nasdaq', 'nyse', 'amex']）
+
+        Returns:
+            銘柄情報を含むDataFrame
+        """
+        if exchanges is None:
+            exchanges = ['nasdaq', 'nyse', 'amex']
+
+        all_stocks = []
+
+        for exchange in exchanges:
+            stocks = self.get_stocks_by_exchange(exchange)
+
+            for stock in stocks:
+                all_stocks.append({
+                    'Ticker': stock.get('symbol'),
+                    'Exchange': exchange.upper(),
+                    'CompanyName': stock.get('companyName', ''),
+                    'MarketCap': stock.get('marketCap', 0),
+                    'Sector': stock.get('sector', ''),
+                    'Industry': stock.get('industry', ''),
+                    'Country': stock.get('country', '')
+                })
+
+        df = pd.DataFrame(all_stocks)
+
+        # 重複除外（同じティッカーが複数の取引所にリストされている場合）
+        # 最初に見つかった取引所を優先
+        df.drop_duplicates(subset=['Ticker'], keep='first', inplace=True)
+
+        return df
+
 
 def get_and_save_tickers():
     """
-    DataHub.ioからNASDAQとNYSEのティッカーリストを取得し、
-    yfinanceで会社名を確認してETF/Fundを除外した後、
-    取引所情報を付与して1つのCSVファイルに保存します。
+    FMP Stock Screener APIからNASDAQ、NYSE、AMEXの純粋な個別銘柄を取得し、
+    stock.csvに保存します。
+
+    従来のyfinanceベースの実装と比較して：
+    - 処理時間: 数分〜十数分 → 数秒に短縮
+    - 精度: FMP側で分類されているため、より正確
+    - シンプル: 複雑な文字列フィルタリングが不要
     """
-    # 1. CSVファイルのURLを定義
-    nasdaq_url = "https://datahub.io/core/nasdaq-listings/_r/-/data/nasdaq-listed-symbols.csv"
-    nyse_url = "https://datahub.io/core/nyse-other-listings/_r/-/data/nyse-listed.csv"
-
-    print("ティッカーリストの取得を開始します...")
+    print("=" * 60)
+    print("FMP Stock Screener API を使用してティッカーリストを取得")
+    print("=" * 60)
 
     try:
-        # 2. URLから直接CSVを読み込み、取引所情報を付与
-        print(f"NASDAQのティッカーをダウンロード中: {nasdaq_url}")
-        nasdaq_df = pd.read_csv(nasdaq_url)
-        nasdaq_df.dropna(subset=['Symbol'], inplace=True)
-        nasdaq_df = nasdaq_df[['Symbol']].copy()
-        nasdaq_df.rename(columns={'Symbol': 'Ticker'}, inplace=True)
-        nasdaq_df['Exchange'] = 'NASDAQ'
-        print(f"{len(nasdaq_df)} 件のNASDAQティッカーを取得しました。")
+        # FMPTickerFetcherの初期化
+        fetcher = FMPTickerFetcher()
 
-        print(f"NYSEのティッカーをダウンロード中: {nyse_url}")
-        nyse_df = pd.read_csv(nyse_url)
-        nyse_df.dropna(subset=['ACT Symbol'], inplace=True)
-        nyse_df = nyse_df[['ACT Symbol']].copy()
-        nyse_df.rename(columns={'ACT Symbol': 'Ticker'}, inplace=True)
-        nyse_df['Exchange'] = 'NYSE'
-        print(f"{len(nyse_df)} 件のNYSEティッカーを取得しました。")
+        # 取引所リスト
+        exchanges = ['nasdaq', 'nyse', 'amex']
 
-    except Exception as e:
-        print(f"エラー: CSVファイルのダウンロードまたは読み込み中にエラーが発生しました: {e}")
+        print(f"\n取得対象取引所: {', '.join([e.upper() for e in exchanges])}")
+        print(f"フィルター条件:")
+        print(f"  - isEtf: false (ETF除外)")
+        print(f"  - isFund: false (投資信託除外)")
+        print(f"  - isActivelyTrading: true (取引停止中を除外)")
+
+        # 全銘柄を取得
+        df = fetcher.get_all_stocks(exchanges)
+
+        print(f"\n" + "=" * 60)
+        print(f"取得結果:")
+        print(f"  合計銘柄数: {len(df)} 件")
+
+        # 取引所別の内訳
+        print(f"\n取引所別内訳:")
+        for exchange in exchanges:
+            count = len(df[df['Exchange'] == exchange.upper()])
+            print(f"  {exchange.upper()}: {count} 件")
+
+        # セクター別の内訳（上位10件）
+        if 'Sector' in df.columns and not df['Sector'].isna().all():
+            print(f"\nセクター別内訳（上位10件）:")
+            sector_counts = df['Sector'].value_counts().head(10)
+            for sector, count in sector_counts.items():
+                if sector:  # 空文字列を除外
+                    print(f"  {sector}: {count} 件")
+
+        # stock.csvに保存（Ticker, Exchangeのみ）
+        output_df = df[['Ticker', 'Exchange']].copy()
+        output_df.to_csv('stock.csv', index=False)
+        print(f"\n✓ ティッカーリストを stock.csv に保存しました")
+
+        # オプション: 詳細情報を含むCSVも保存
+        df.to_csv('stock_detailed.csv', index=False)
+        print(f"✓ 詳細情報を stock_detailed.csv に保存しました")
+
+        print("=" * 60)
+        print("処理が正常に完了しました！")
+        print("=" * 60)
+
+    except ValueError as e:
+        print(f"\nエラー: {e}")
+        print("環境変数 FMP_API_KEY が正しく設定されているか確認してください。")
         return
-
-    # 3. DataFrameを結合し、ティッカーの重複を排除
-    combined_df = pd.concat([nasdaq_df, nyse_df], ignore_index=True)
-    combined_df.drop_duplicates(subset=['Ticker'], keep='first', inplace=True)
-    combined_df['Ticker'] = combined_df['Ticker'].astype(str)
-
-    print(f"合計 {len(combined_df)} 件のユニークなティッカーが見つかりました。")
-
-    # 4. 除外条件に基づいてティッカーをフィルタリング
-    print("指定された条件に基づいてティッカーをフィルタリングします...")
-    excluded_suffixes = ['.U', '.W', '.A', '.B', '.R']
-    initial_count = len(combined_df)
-
-    # 条件①：ティッカーの文字数が5文字
-    combined_df = combined_df[combined_df['Ticker'].str.len() != 5]
-    count_after_len = len(combined_df)
-    print(f"文字数が5文字のティッカーを除外: {initial_count - count_after_len} 件")
-
-    # 条件②：特定の接尾辞が付いている
-    combined_df = combined_df[~combined_df['Ticker'].str.contains('|'.join(s.replace('.', r'\.') for s in excluded_suffixes), na=False)]
-    count_after_suffix = len(combined_df)
-    print(f"特定の接尾辞を持つティッカーを除外: {count_after_len - count_after_suffix} 件")
-
-    # 条件③：ティッカーの文字の中に$が入っている
-    combined_df = combined_df[~combined_df['Ticker'].str.contains(r'\$', na=False)]
-    count_after_dollar = len(combined_df)
-    print(f"'$'を含むティッカーを除外: {count_after_suffix - count_after_dollar} 件")
-
-    # 条件④：'FILE CREATION TIME'で始まる無効なティッカーを除外
-    combined_df = combined_df[~combined_df['Ticker'].str.startswith('FILE CREATION TIME', na=False)]
-    count_after_invalid = len(combined_df)
-    print(f"'FILE CREATION TIME'で始まる無効なティッカーを除外: {count_after_dollar - count_after_invalid} 件")
-
-    # 5. yfinanceでETF/Fundを除外
-    print("\nyfinanceで会社名を取得し、ETF/Fundを除外します...")
-    print("※ この処理には時間がかかります（数分〜十数分）")
-    
-    # curl-cffiのSessionを作成（API制限回避）
-    yf_session = Session(impersonate="safari15_5")
-    
-    batch_size = 30  # HanaViewと同じバッチサイズ
-    tickers_to_check = combined_df['Ticker'].tolist()
-    valid_tickers = []
-    etf_fund_count = 0
-    error_count = 0
-    
-    for i in tqdm(range(0, len(tickers_to_check), batch_size), desc="銘柄情報取得中"):
-        batch = tickers_to_check[i:i+batch_size]
-        
-        for ticker_symbol in batch:
-            try:
-                ticker_obj = yf.Ticker(ticker_symbol, session=yf_session)
-                info = ticker_obj.info
-                
-                # 会社名を取得
-                company_name = info.get('shortName', '') or info.get('longName', '')
-                
-                # ETFまたはFundが含まれているかチェック
-                if company_name:
-                    name_upper = company_name.upper()
-                    if 'ETF' in name_upper or 'FUND' in name_upper:
-                        etf_fund_count += 1
-                        continue
-                
-                # quoteTypeでも二重チェック
-                quote_type = info.get('quoteType', '')
-                if quote_type in ['ETF', 'MUTUALFUND']:
-                    etf_fund_count += 1
-                    continue
-                
-                # 通過した銘柄を有効リストに追加
-                valid_tickers.append(ticker_symbol)
-                
-            except Exception as e:
-                # エラーが出た銘柄は念のため除外
-                error_count += 1
-                continue
-        
-        # バッチ間で待機（API制限回避）
-        if i + batch_size < len(tickers_to_check):
-            time.sleep(3)
-    
-    print(f"\nETF/Fund除外: {etf_fund_count} 件")
-    print(f"エラー/データ取得失敗: {error_count} 件")
-    
-    # 6. 有効なティッカーのみでDataFrameを再構築
-    combined_df = combined_df[combined_df['Ticker'].isin(valid_tickers)].copy()
-    
-    final_count = len(combined_df)
-    print(f"最終的に {final_count} 件のティッカーが残りました。")
-
-    # 7. stock.csvに保存（ヘッダー付き、インデックスなし）
-    try:
-        combined_df.to_csv('stock.csv', index=False, columns=['Ticker', 'Exchange'])
-        print("ティッカーリストを stock.csv に正常に保存しました。")
     except Exception as e:
-        print(f"エラー: stock.csv への書き込み中にエラーが発生しました: {e}")
+        print(f"\nエラー: 予期しないエラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
+        return
 
 
 if __name__ == '__main__':
