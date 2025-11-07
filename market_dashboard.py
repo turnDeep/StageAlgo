@@ -535,36 +535,63 @@ class MarketDashboard:
                 current_rs_score = rs_score_series.iloc[-1] if not rs_score_series.empty else 0
                 rs_rating = rs_calc.calculate_percentile_rating(current_rs_score)
 
-                # --- Relative Strength (vs SPY, 1-Year) ---
-                spy_perf_1y = ((spy_indicators['Close'].iloc[-1] - spy_indicators['Close'].iloc[-252]) / spy_indicators['Close'].iloc[-252]) * 100
-                ticker_perf_1y = ((current_price - indicators_df['Close'].iloc[-252]) / indicators_df['Close'].iloc[-252]) * 100
+                # --- Relative Strength (vs SPY, 過去20日分) ---
+                rs_history = []
+                if len(indicators_df) >= 20 and len(spy_indicators) >= 20:
+                    for i in range(-20, 0):
+                        try:
+                            ticker_price = indicators_df['Close'].iloc[i]
+                            ticker_price_base = indicators_df['Close'].iloc[-21]  # 20日前を基準
+                            spy_price = spy_indicators['Close'].iloc[i]
+                            spy_price_base = spy_indicators['Close'].iloc[-21]
+
+                            if ticker_price_base > 0 and spy_price_base > 0:
+                                ticker_return = (ticker_price / ticker_price_base - 1) * 100
+                                spy_return = (spy_price / spy_price_base - 1) * 100
+                                relative_strength = ticker_return - spy_return
+                                rs_history.append(relative_strength)
+                            else:
+                                rs_history.append(0)
+                        except:
+                            rs_history.append(0)
+                else:
+                    rs_history = [0] * 20
+
+                # 最新のRelative Strength
+                spy_perf_1y = ((spy_indicators['Close'].iloc[-1] - spy_indicators['Close'].iloc[-252]) / spy_indicators['Close'].iloc[-252]) * 100 if len(spy_indicators) >= 252 else 0
+                ticker_perf_1y = ((current_price - indicators_df['Close'].iloc[-252]) / indicators_df['Close'].iloc[-252]) * 100 if len(indicators_df) >= 252 else 0
                 relative_strength = ticker_perf_1y - spy_perf_1y
 
                 # --- Performance ---
                 ytd_start_price = indicators_df.loc[indicators_df.index >= f"{self.current_date.year}-01-01"]['Close'].iloc[0] if not indicators_df.loc[indicators_df.index >= f"{self.current_date.year}-01-01"].empty else np.nan
                 ytd_pct = ((current_price - ytd_start_price) / ytd_start_price) * 100 if not pd.isna(ytd_start_price) else 0
 
-                week_ago_price = indicators_df['Close'].iloc[-6] if len(indicators_df) >= 6 else np.nan # 5 trading days ago is index -6
+                week_ago_price = indicators_df['Close'].iloc[-6] if len(indicators_df) >= 6 else np.nan
                 week_pct = ((current_price - week_ago_price) / week_ago_price) * 100 if not pd.isna(week_ago_price) else 0
 
-                month_ago_price = indicators_df['Close'].iloc[-22] if len(indicators_df) >= 22 else np.nan # 21 trading days ago
+                month_ago_price = indicators_df['Close'].iloc[-22] if len(indicators_df) >= 22 else np.nan
                 month_pct = ((current_price - month_ago_price) / month_ago_price) * 100 if not pd.isna(month_ago_price) else 0
 
                 year_ago_price = indicators_df['Close'].iloc[-252] if len(indicators_df) >= 252 else np.nan
                 year_pct = ((current_price - year_ago_price) / year_ago_price) * 100 if not pd.isna(year_ago_price) else 0
 
                 # --- Highs ---
-                high_52w = indicators_df['High'].tail(252).max()
+                high_52w = indicators_df['High'].tail(252).max() if len(indicators_df) >= 252 else indicators_df['High'].max()
                 from_high_pct = ((current_price - high_52w) / high_52w) * 100 if high_52w > 0 else 0
 
                 # --- Trend Indicators (MAs) ---
+                sma_10 = latest.get('SMA_10', np.nan)
+                sma_20 = latest.get('SMA_20', np.nan)
+                sma_50 = latest.get('SMA_50', np.nan)
+                sma_200 = latest.get('SMA_200', np.nan)
+
                 trends = {
-                    'above_10ma': current_price > latest.get('SMA_10', np.nan),
-                    'above_20ma': current_price > latest.get('SMA_20', np.nan),
-                    'above_50ma': current_price > latest.get('SMA_50', np.nan),
-                    'above_200ma': current_price > latest.get('SMA_200', np.nan),
-                    '20ma_above_50ma': latest.get('SMA_20', np.nan) > latest.get('SMA_50', np.nan),
-                    '50ma_above_200ma': latest.get('SMA_50', np.nan) > latest.get('SMA_200', np.nan),
+                    'above_10ma': current_price > sma_10 if not pd.isna(sma_10) else False,
+                    'above_20ma': current_price > sma_20 if not pd.isna(sma_20) else False,
+                    'above_50ma': current_price > sma_50 if not pd.isna(sma_50) else False,
+                    'above_200ma': current_price > sma_200 if not pd.isna(sma_200) else False,
+                    '20ma_above_50ma': sma_20 > sma_50 if not pd.isna(sma_20) and not pd.isna(sma_50) else False,
+                    '50ma_above_200ma': sma_50 > sma_200 if not pd.isna(sma_50) and not pd.isna(sma_200) else False,
                 }
 
                 results.append({
@@ -573,6 +600,7 @@ class MarketDashboard:
                     'price': price,
                     '% 1D': day_pct,
                     'Relative Strength': relative_strength,
+                    'RS History': rs_history,  # 20日分のRS履歴
                     'RS STS %': rs_rating,
                     '% YTD': ytd_pct,
                     '% 1W': week_pct,
