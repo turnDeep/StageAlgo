@@ -48,6 +48,12 @@ def main():
         print(f"  MACD Histogram: {power_trend.get('macd_histogram', 0):.2f}")
         print(f"  Trend: {power_trend.get('trend', 'N/A')}")
 
+    # すべての個別銘柄のパフォーマンスデータを計算
+    print("\n" + "=" * 80)
+    print("CALCULATING INDIVIDUAL STOCKS PERFORMANCE")
+    print("=" * 80)
+    individual_stocks = dashboard.calculate_all_stocks_performance()
+
     # JSONデータの準備
     dashboard_data = {
         'generated_at': dashboard.current_date.strftime('%Y-%m-%d %H:%M:%S'),
@@ -64,6 +70,10 @@ def main():
         'macro_performance': {
             'data': macro_performance.to_dict('records') if not macro_performance.empty else []
         },
+        'individual_stocks': {
+            'data': individual_stocks.to_dict('records') if not individual_stocks.empty else [],
+            'count': len(individual_stocks) if not individual_stocks.empty else 0
+        },
         'screener_results': {}
     }
 
@@ -73,6 +83,13 @@ def main():
             dashboard_data['screener_results'][name] = {
                 'data': df.to_dict('records') if not df.empty else []
             }
+
+    # 個別銘柄データのサマリーを表示
+    if not individual_stocks.empty:
+        print(f"\n✓ Individual stocks data: {len(individual_stocks)} stocks")
+        print(f"  Top 10 by RS Rating:")
+        top_10 = individual_stocks.head(10)[['Ticker', 'Price', 'RS Rating', '% 1D', '% 1M', '% YTD', 'Stage']]
+        print(top_10.to_string(index=False))
 
     # JSONファイルに保存
     json_output = 'market_dashboard_data.json'

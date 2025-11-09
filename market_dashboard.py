@@ -743,6 +743,182 @@ class MarketDashboard:
             print(f"Error calculating power trend: {e}")
             return {}
 
+    def calculate_all_stocks_performance(self) -> pd.DataFrame:
+        """
+        すべての個別銘柄のパフォーマンスデータを計算
+        stock.csvからすべてのティッカーを読み込み、詳細な指標を計算
+
+        Returns:
+            すべての個別銘柄のパフォーマンスデータを含むDataFrame
+        """
+        if not self.screening_tickers:
+            print("No tickers found in stock.csv")
+            return pd.DataFrame()
+
+        print(f"\nCalculating performance for {len(self.screening_tickers)} individual stocks...")
+        print("This may take several minutes...")
+
+        results = []
+        total = len(self.screening_tickers)
+
+        # SPYデータを事前に取得（RS Rating計算用）
+        spy_df = self.fetch_ticker_data('SPY', period='2y', interval='1d')
+        if spy_df.empty:
+            print("Error: Could not fetch SPY data for RS Rating calculation.")
+            return pd.DataFrame()
+        spy_indicators = calculate_all_basic_indicators(spy_df.copy())
+
+        for idx, ticker in enumerate(self.screening_tickers, 1):
+            try:
+                if idx % 50 == 0:
+                    print(f"  Progress: {idx}/{total} ({idx/total*100:.1f}%)")
+
+                df = self.fetch_ticker_data(ticker, period='2y', interval='1d')
+                if df.empty or len(df) < 100:  # 最低100日のデータが必要
+                    continue
+
+                # インジケーター計算
+                indicators_df = calculate_all_basic_indicators(df.copy())
+                if len(indicators_df) < 100:
+                    continue
+
+                # 10MA, 20MAを追加
+                indicators_df['SMA_10'] = indicators_df['Close'].rolling(window=10).mean()
+                indicators_df['SMA_20'] = indicators_df['Close'].rolling(window=20).mean()
+
+                latest = indicators_df.iloc[-1]
+                current_price = latest['Close']
+
+                # --- RS Rating ---
+                try:
+                    rs_calc = RSCalculator(indicators_df, spy_indicators)
+                    rs_score_series = rs_calc.calculate_ibd_rs_score()
+                    current_rs_score = rs_score_series.iloc[-1] if not rs_score_series.empty else 0
+                    rs_rating = rs_calc.calculate_percentile_rating(current_rs_score)
+                except Exception:
+                    rs_rating = 0
+
+                # --- Stage Detection ---
+                try:
+                    stage_detector = StageDetector(indicators_df)
+                    current_stage = stage_detector.detect_current_stage()
+                except Exception:
+                    current_stage = 0
+
+                # --- Basic Info ---
+                price = current_price
+                day_pct = ((current_price - indicators_df['Close'].iloc[-2]) / indicators_df['Close'].iloc[-2]) * 100 if len(indicators_df) > 1 else 0
+
+                # --- Performance ---
+                ytd_start_price = indicators_df.loc[indicators_df.index >= f"{self.current_date.year}-01-01"]['Close'].iloc[0] if not indicators_df.loc[indicators_df.index >= f"{self.current_date.year}-01-01"].empty else np.nan
+                ytd_pct = ((current_price - ytd_start_price) / ytd_start_price) * 100 if not pd.isna(ytd_start_price) else 0
+
+                week_ago_price = indicators_df['Close'].iloc[-6] if len(indicators_df) >= 6 else np.nan
+                week_pct = ((current_price - week_ago_price) / week_ago_price) * 100 if not pd.isna(week_ago_price) else 0
+
+                month_ago_price = indicators_df['Close'].iloc[-22] if len(indicators_df) >= 22 else np.nan
+                month_pct = ((current_price - month_ago_price) / month_ago_price) * 100 if not pd.isna(month_ago_price) else 0
+
+                quarter_ago_price = indicators_df['Close'].iloc[-63] if len(indicators_df) >= 63 else np.nan
+                quarter_pct = ((current_price - quarter_ago_price) / quarter_ago_price) * 100 if not pd.isna(quarter_ago_price) else 0
+
+                year_ago_price = indicators_df['Close'].iloc[-252] if len(indicators_df) >= 252 else np.nan
+                year_pct = ((current_price - year_ago_price) / year_ago_price) * 100 if not pd.isna(year_ago_price) else 0
+
+                # --- Highs/Lows ---
+                high_52w = indicators_df['High'].tail(252).max() if len(indicators_df) >= 252 else indicators_df['High'].max()
+                low_52w = indicators_df['Low'].tail(252).min() if len(indicators_df) >= 252 else indicators_df['Low'].min()
+                from_high_pct = ((current_price - high_52w) / high_52w) * 100 if high_52w > 0 else 0
+                from_low_pct = ((current_price - low_52w) / low_52w) * 100 if low_52w > 0 else 0
+
+                # --- Volume ---
+                current_volume = latest['Volume']
+                avg_volume_50 = indicators_df['Volume'].tail(50).mean() if len(indicators_df) >= 50 else current_volume
+                volume_ratio = (current_volume / avg_volume_50) if avg_volume_50 > 0 else 1.0
+
+                # --- Moving Averages ---
+                sma_10 = latest.get('SMA_10', np.nan)
+                sma_20 = latest.get('SMA_20', np.nan)
+                sma_50 = latest.get('SMA_50', np.nan)
+                sma_200 = latest.get('SMA_200', np.nan)
+
+                # MA distances
+                dist_10ma = ((current_price - sma_10) / sma_10) * 100 if not pd.isna(sma_10) else 0
+                dist_20ma = ((current_price - sma_20) / sma_20) * 100 if not pd.isna(sma_20) else 0
+                dist_50ma = ((current_price - sma_50) / sma_50) * 100 if not pd.isna(sma_50) else 0
+                dist_200ma = ((current_price - sma_200) / sma_200) * 100 if not pd.isna(sma_200) else 0
+
+                # MA booleans
+                above_10ma = current_price > sma_10 if not pd.isna(sma_10) else False
+                above_20ma = current_price > sma_20 if not pd.isna(sma_20) else False
+                above_50ma = current_price > sma_50 if not pd.isna(sma_50) else False
+                above_200ma = current_price > sma_200 if not pd.isna(sma_200) else False
+
+                # MA alignment
+                ma_alignment = (sma_10 > sma_20 > sma_50 > sma_200) if all(not pd.isna(x) for x in [sma_10, sma_20, sma_50, sma_200]) else False
+
+                # --- Relative Strength vs SPY ---
+                spy_perf_1y = ((spy_indicators['Close'].iloc[-1] - spy_indicators['Close'].iloc[-252]) / spy_indicators['Close'].iloc[-252]) * 100 if len(spy_indicators) >= 252 else 0
+                relative_strength = year_pct - spy_perf_1y if year_pct != 0 else 0
+
+                # --- Technical Indicators ---
+                rsi_14 = latest.get('RSI', 0)
+
+                # ATR
+                atr = latest.get('ATR', 0)
+                atr_pct = (atr / current_price) * 100 if current_price > 0 else 0
+
+                results.append({
+                    'Ticker': ticker,
+                    'Price': price,
+                    'Stage': current_stage,
+                    'RS Rating': rs_rating,
+                    '% 1D': day_pct,
+                    '% 1W': week_pct,
+                    '% 1M': month_pct,
+                    '% 3M': quarter_pct,
+                    '% YTD': ytd_pct,
+                    '% 1Y': year_pct,
+                    'Relative Strength': relative_strength,
+                    '% From 52W High': from_high_pct,
+                    '% From 52W Low': from_low_pct,
+                    '52W High': high_52w,
+                    '52W Low': low_52w,
+                    'Volume': current_volume,
+                    'Avg Volume (50)': avg_volume_50,
+                    'Volume Ratio': volume_ratio,
+                    'RSI (14)': rsi_14,
+                    'ATR': atr,
+                    'ATR %': atr_pct,
+                    '10MA': sma_10,
+                    '20MA': sma_20,
+                    '50MA': sma_50,
+                    '200MA': sma_200,
+                    'Dist from 10MA %': dist_10ma,
+                    'Dist from 20MA %': dist_20ma,
+                    'Dist from 50MA %': dist_50ma,
+                    'Dist from 200MA %': dist_200ma,
+                    'Above 10MA': above_10ma,
+                    'Above 20MA': above_20ma,
+                    'Above 50MA': above_50ma,
+                    'Above 200MA': above_200ma,
+                    'MA Alignment': ma_alignment,
+                })
+
+            except Exception as e:
+                # エラーは静かにスキップ（大量の銘柄処理中のノイズを減らす）
+                continue
+
+        print(f"✓ Completed: {len(results)}/{total} stocks processed successfully")
+
+        df = pd.DataFrame(results)
+
+        # RS Ratingでソート
+        if not df.empty and 'RS Rating' in df.columns:
+            df = df.sort_values('RS Rating', ascending=False)
+
+        return df
+
     def generate_dashboard(self, output_file: str = 'market_dashboard_output.txt'):
         """
         ダッシュボードを生成してファイルに出力
