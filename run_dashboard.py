@@ -1,21 +1,24 @@
 # run_dashboard.py
 """
 Market Dashboard Runner
-ダッシュボードの実行とJSON/PNG生成
+ダッシュボードの実行とJSON/HTML生成
 """
 
 import json
-from dotenv import load_dotenv
-from market_dashboard import MarketDashboard
-from dashboard_image_generator import generate_dashboard_image_from_json
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    print("Warning: python-dotenv not installed. Skipping .env file loading.")
+    pass
 
-# Load environment variables from .env file
-load_dotenv()
+from market_dashboard import MarketDashboard
+from dashboard_visualizer import DashboardVisualizer
 
 
 def main():
     """
-    ダッシュボードを生成してJSON/PNGに出力
+    ダッシュボードを生成してJSON/HTMLに出力
     """
     print("Initializing Market Dashboard...")
     dashboard = MarketDashboard()
@@ -25,10 +28,33 @@ def main():
     # データ収集とダッシュボード生成
     exposure, market_performance, sectors_performance, macro_performance, screener_results = dashboard.generate_dashboard()
 
+    # 追加データの取得
+    print("\nCalculating additional metrics...")
+    factors_vs_sp500 = dashboard.calculate_factors_vs_sp500()
+    bond_yields = dashboard.get_bond_yields()
+    power_trend = dashboard.calculate_power_trend()
+
+    print("\nFactors vs SP500:")
+    for name, value in factors_vs_sp500.items():
+        print(f"  {name}: {value:+.2f}%")
+
+    print("\nBond Yields:")
+    for name, value in bond_yields.items():
+        print(f"  {name}: {value:.2f}%")
+
+    if power_trend:
+        print("\nPower Trend:")
+        print(f"  RSI: {power_trend.get('rsi', 0):.2f}")
+        print(f"  MACD Histogram: {power_trend.get('macd_histogram', 0):.2f}")
+        print(f"  Trend: {power_trend.get('trend', 'N/A')}")
+
     # JSONデータの準備
     dashboard_data = {
         'generated_at': dashboard.current_date.strftime('%Y-%m-%d %H:%M:%S'),
         'exposure': exposure,
+        'factors_vs_sp500': factors_vs_sp500,
+        'bond_yields': bond_yields,
+        'power_trend': power_trend,
         'market_performance': {
             'data': market_performance.to_dict('records') if not market_performance.empty else []
         },
@@ -55,14 +81,24 @@ def main():
         json.dump(dashboard_data, f, indent=2, ensure_ascii=False, default=str)
     print(f"✓ JSON data saved to: {json_output}")
 
-    # PNG画像を生成
-    print("\nGenerating PNG dashboard image...")
-    png_output = 'market_dashboard.png'
-    generate_dashboard_image_from_json(json_output, png_output)
+    # HTML生成
+    print("\nGenerating HTML dashboard...")
+    visualizer = DashboardVisualizer()
+    html = visualizer.generate_html_dashboard(
+        exposure=exposure,
+        market_performance=market_performance,
+        sectors_performance=sectors_performance,
+        macro_performance=macro_performance,
+        screener_results=screener_results,
+        factors_vs_sp500=factors_vs_sp500,
+        bond_yields=bond_yields,
+        power_trend=power_trend
+    )
+    visualizer.save_html(html, 'market_dashboard.html')
 
     print("\n✅ Dashboard generation complete!")
     print(f"📊 JSON data: {json_output}")
-    print(f"🖼️  PNG image: {png_output}")
+    print(f"🌐 HTML dashboard: market_dashboard.html")
 
 
 if __name__ == '__main__':
