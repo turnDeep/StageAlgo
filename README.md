@@ -292,6 +292,42 @@ docker-compose exec app bash
 Oratnek Screenerは、IBD (Investor's Business Daily) 手法に基づく6つのスクリーニングリストを提供します。
 **Version 2.0では、SQLiteベースのデータ管理とマルチプロセス化により大幅に高速化されました。**
 
+### データ取得とキャッシュ
+
+Oratnek Screenerは、以下のデータをFinancialModelingPrep (FMP) APIから取得します：
+
+#### 株価データ
+- 日次OHLCV（始値、高値、安値、終値、出来高）
+- 週次OHLCV
+- 移動平均線（SMA 10/21/50/150/200、EMA 200）
+
+#### ファンダメンタルデータ
+- **市場情報**: 時価総額、セクター、業種
+- **EPS関連データ**:
+  - **実績EPS**: 四半期損益計算書から取得（`get_income_statement()`）
+  - **予想EPS**: アナリスト予想データから取得（`get_earnings_surprises()`）
+  - **EPS成長率の計算**:
+    - `eps_growth_last_qtr`: 前四半期比EPS成長率 (%)
+      ```python
+      eps_growth_last_qtr = ((最新四半期EPS - 1四半期前EPS) / |1四半期前EPS|) × 100
+      ```
+    - `eps_est_cur_qtr_growth`: 今四半期予想EPS成長率（YoY, %)
+      ```python
+      eps_est_cur_qtr_growth = ((予想EPS - 4四半期前EPS) / |4四半期前EPS|) × 100
+      ```
+
+**データ保存先**:
+- SQLiteデータベース（`data/oratnek/oratnek_cache.db`）
+  - `daily_prices`: 日次株価 + 移動平均
+  - `weekly_prices`: 週次株価
+  - `fundamental_data`: ファンダメンタル情報（**EPS、市場キャップ、セクター等**）
+  - `data_metadata`: データメタ情報
+
+**キャッシュ戦略**:
+- 株価データ: 日次更新（差分取得）
+- ファンダメンタルデータ: 1日に1回更新
+- 初回実行時は全履歴を取得、2回目以降は差分のみ取得
+
 ### IBD指標の詳細計算方法
 
 #### 1. RS Rating (相対的強さレーティング)
@@ -456,16 +492,28 @@ rank_6m_pct = 銘柄の6ヶ月リターンの全体でのパーセンタイル�
 - ブレイクアウト後の追撃買い候補
 - リスク: 既に大きく上昇しているため天井圏の可能性もある
 
-#### 2. Explosive EPS Growth (oratnek_screeners.py:392-437)
+#### 2. Explosive EPS Growth (oratnek_screeners.py:500-550)
 
-**目的**: 高成長ポテンシャルを持つ強い銘柄を発見（データ制約によりRS Ratingで代用）
+**目的**: 高い利益成長率を持つ強い銘柄を発見
 
 **スクリーニング条件**:
 ```python
-条件1: rs_rating >= 80          # 上位20%の相対的強さ
-条件2: avg_volume_50d >= 100,000  # 十分な流動性
-条件3: price >= sma_50           # 50日移動平均線より上
+条件1: rs_rating >= 80                    # 上位20%の相対的強さ
+条件2: eps_est_cur_qtr_growth >= 100      # 今四半期予想EPS成長率が100%以上（YoY）
+                                          # ※EPSデータが取得できない場合はこの条件をスキップ
+条件3: avg_volume_50d >= 100,000          # 十分な流動性
+条件4: price >= sma_50                    # 50日移動平均線より上
 ```
+
+**EPSデータの取得と使用**:
+- FMP APIの`get_income_statement()`で四半期EPSを取得
+- FMP APIの`get_earnings_surprises()`で予想EPSを取得
+- `eps_est_cur_qtr_growth`を計算:
+  ```python
+  # 予想EPSと前年同期（4四半期前）の実績EPSから計算
+  eps_est_cur_qtr_growth = ((予想EPS - 4四半期前EPS) / |4四半期前EPS|) × 100
+  ```
+- EPSデータが利用できない銘柄でも、RS Rating条件のみで通過可能
 
 **すべての条件を満たす銘柄を抽出**
 
@@ -473,17 +521,18 @@ rank_6m_pct = 銘柄の6ヶ月リターンの全体でのパーセンタイル�
 - ticker: ティッカーシンボル
 - price: 現在価格
 - rs_rating: RS Rating
+- eps_est_cur_qtr_growth: 今四半期予想EPS成長率 (%)
 - avg_volume_50d: 50日平均出来高
 - price_vs_sma50_pct: 50日移動平均線からの乖離率 (%)
 
-**ソート**: RS Ratingの降順
+**ソート**: EPS成長率の降順
 
 **トレード戦略**:
 - 強いトレンド中の成長株を発見
 - 50日移動平均線がサポートラインとして機能
 - 高いRS Ratingは市場全体に対する強さを示す
 
-#### 3. Up on Volume (oratnek_screeners.py:439-491)
+#### 3. Up on Volume (oratnek_screeners.py:552-610)
 
 **目的**: 出来高を伴って上昇している機関投資家注目銘柄を発見
 
@@ -493,9 +542,18 @@ rank_6m_pct = 銘柄の6ヶ月リターンの全体でのパーセンタイル�
 条件2: vol_change_pct >= 20           # 出来高が50日平均の120%以上
 条件3: price >= 10                    # 最低価格フィルタ
 条件4: avg_volume_50d >= 100,000      # 十分な流動性
-条件5: rs_rating >= 80                # 強い相対的強さ
-条件6: ad_rating in ['A', 'B', 'C']  # 蓄積または中立
+条件5: market_cap >= 250              # 時価総額 $250M以上
+条件6: rs_rating >= 80                # 強い相対的強さ
+条件7: eps_growth_last_qtr >= 20      # 前四半期比EPS成長率が20%以上
+条件8: ad_rating in ['A', 'B', 'C']  # 蓄積または中立
 ```
+
+**EPSデータの使用**:
+- `eps_growth_last_qtr`（前四半期比EPS成長率）を条件に使用
+- FMP APIの`get_income_statement()`から四半期EPSを取得し、以下を計算:
+  ```python
+  eps_growth_last_qtr = ((最新四半期EPS - 1四半期前EPS) / |1四半期前EPS|) × 100
+  ```
 
 **すべての条件を満たす銘柄を抽出**
 
@@ -504,6 +562,8 @@ rank_6m_pct = 銘柄の6ヶ月リターンの全体でのパーセンタイル�
 - price: 現在価格
 - price_change_pct: 当日変化率 (%)
 - vol_change_pct: 出来高変化率 (%)
+- market_cap: 時価総額 ($M)
+- eps_growth_last_qtr: 前四半期比EPS成長率 (%)
 - rs_rating: RS Rating
 - ad_rating: A/D Rating
 - avg_volume_50d: 50日平均出来高
@@ -515,7 +575,7 @@ rank_6m_pct = 銘柄の6ヶ月リターンの全体でのパーセンタイル�
 - 出来高を伴う上昇は信頼性が高い
 - 当日エントリーまたは翌日寄り付きでのエントリー候補
 
-#### 4. Top 2% RS Rating (oratnek_screeners.py:493-542)
+#### 4. Top 2% RS Rating (oratnek_screeners.py:612-668)
 
 **目的**: 市場全体で最強の相対的強さを持ち、完璧なトレンドを示す銘柄を発見
 
@@ -544,7 +604,7 @@ rank_6m_pct = 銘柄の6ヶ月リターンの全体でのパーセンタイル�
 - 移動平均線の順序が完璧なため、強いトレンドが継続中
 - 押し目買いの候補
 
-#### 5. 4% Bullish Yesterday (oratnek_screeners.py:544-602)
+#### 5. 4% Bullish Yesterday (oratnek_screeners.py:670-734)
 
 **目的**: 前日に急騰した銘柄で、当日も勢いが継続している銘柄を発見
 
@@ -577,7 +637,7 @@ yesterday_change = (昨日終値 - 一昨日終値) / 一昨日終値 × 100
 - 当日も寄り高から上昇しているため勢いが継続
 - デイトレードまたは短期スイングトレード候補
 
-#### 6. Healthy Chart Watch List (oratnek_screeners.py:604-662)
+#### 6. Healthy Chart Watch List (oratnek_screeners.py:736-802)
 
 **目的**: Stage 2（上昇トレンド）にあり、健全なチャート形状を持つ高品質銘柄を発見
 
@@ -674,18 +734,13 @@ ORATNEK_MAX_WORKERS=10   # 並列ワーカー数
 ORATNEK_BATCH_SIZE=50    # バッチサイズ
 ```
 
-### データ保存先
+### スクリーニング結果の保存先
 
-- **SQLiteデータベース**: `data/oratnek/oratnek_cache.db`
-  - `daily_prices`: 日次株価 + 移動平均
-  - `weekly_prices`: 週次株価
-  - `fundamental_data`: ファンダメンタル情報
-  - `data_metadata`: データメタ情報
+**出力先**: `data/oratnek/results/`
 
-- **スクリーニング結果**: `data/oratnek/results/`
-  - `latest.json`: 最新のスクリーニング結果
-  - `screening_YYYYMMDD_HHMMSS.json`: タイムスタンプ付き結果
-  - `screener_[name]_YYYYMMDD.csv`: 各スクリーナーのCSV
+- `latest.json`: 最新のスクリーニング結果
+- `screening_YYYYMMDD_HHMMSS.json`: タイムスタンプ付き結果
+- `screener_[name]_YYYYMMDD.csv`: 各スクリーナーのCSV
 
 ### パフォーマンス
 
