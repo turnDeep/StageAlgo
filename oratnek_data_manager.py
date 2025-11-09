@@ -237,8 +237,17 @@ class OratnekDataManager:
             row = cursor.execute(query, (symbol,)).fetchone()
             if row:
                 row_dict = dict(zip([d[0] for d in cursor.description], row))
-                row_dict['first_date'] = datetime.strptime(row_dict['first_date'], '%Y-%m-%d').date() if row_dict['first_date'] else None
-                row_dict['last_date'] = datetime.strptime(row_dict['last_date'], '%Y-%m-%d').date() if row_dict['last_date'] else None
+                # Handle date parsing - split on space to handle both 'YYYY-MM-DD' and 'YYYY-MM-DD HH:MM:SS' formats
+                if row_dict['first_date']:
+                    date_str = str(row_dict['first_date']).split()[0]
+                    row_dict['first_date'] = datetime.strptime(date_str, '%Y-%m-%d').date()
+                else:
+                    row_dict['first_date'] = None
+                if row_dict['last_date']:
+                    date_str = str(row_dict['last_date']).split()[0]
+                    row_dict['last_date'] = datetime.strptime(date_str, '%Y-%m-%d').date()
+                else:
+                    row_dict['last_date'] = None
                 return row_dict
             return None
         except Exception as e:
