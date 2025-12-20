@@ -189,7 +189,11 @@ class TimeSeriesQuantLibAnalyzer:
         return cycle
 
 if __name__ == "__main__":
-    analyzer = TimeSeriesQuantLibAnalyzer("CDE")
+    parser = argparse.ArgumentParser(description="QuantLib Time-Series Analyzer")
+    parser.add_argument("-t", "--ticker", type=str, required=True, help="Stock Ticker Symbol")
+    args = parser.parse_args()
+
+    analyzer = TimeSeriesQuantLibAnalyzer(args.ticker)
     if analyzer.fetch_history():
         analyzer.calculate_metrics()
         analyzer.plot_analysis()
