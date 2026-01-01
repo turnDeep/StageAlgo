@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from scipy.signal import argrelextrema
 
 def check_trend_template(df):
     """
