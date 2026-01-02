@@ -33,9 +33,9 @@ def check_trend_template(df):
 
     return c1 and c2 and c3 and c4 and c5
 
-def calculate_smr(financials):
+def calculate_smr_rating_value(financials):
     """
-    Calculates SMR Score (0-100) based on approximate logic.
+    Calculates SMR Rating (0-100) based on approximate logic.
     Sales Growth, Profit Margin, ROE.
     Returns None if data insufficient.
     """
@@ -92,6 +92,23 @@ def calculate_smr(financials):
 
     except Exception:
         return None
+
+def get_smr_rating_grade(score):
+    """
+    Maps 0-100 score to SMR Rating A-E.
+    """
+    if score is None:
+        return 'E'
+    if score >= 80:
+        return 'A'
+    elif score >= 60:
+        return 'B'
+    elif score >= 40:
+        return 'C'
+    elif score >= 20:
+        return 'D'
+    else:
+        return 'E'
 
 def calculate_rs(df):
     """
