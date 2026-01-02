@@ -121,11 +121,13 @@ def run():
     # 3. Load Universe
     try:
         stock_df = pd.read_csv("stock.csv")
+        # Remove duplicates immediately
+        stock_df.drop_duplicates(subset=['Ticker'], inplace=True)
         all_tickers = stock_df['Ticker'].tolist()
         all_tickers = [str(t).replace('.', '-') for t in all_tickers]
 
         tickers = all_tickers
-        print(f"Selected ALL {len(tickers)} tickers for analysis.")
+        print(f"Selected ALL {len(tickers)} tickers for analysis (Unique).")
 
     except Exception as e:
         print(f"Error reading stock.csv: {e}")
