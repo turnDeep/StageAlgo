@@ -195,6 +195,50 @@ class RSCalculator:
             'percent_from_high': percent_from_high,
             'strength': self._interpret_rs_line_strength(percent_from_high) if percent_from_high is not None else 'Unknown'
         }
+
+    def detect_blue_sky_setup(self, window: int = 50) -> Dict:
+        """
+        Detect 'Blue Sky' setup where RS Line makes a new high but Price is still in a base.
+        (Price Lagging, RS Leading)
+
+        Args:
+            window: Lookback window for highs (default 50 days)
+
+        Returns:
+            dict: Detection result
+        """
+        if len(self.df) < window + 1:
+            return {'is_blue_sky': False, 'details': 'Insufficient data'}
+
+        rs_line = self.calculate_rs_line()
+        close = self.df['Close']
+
+        # Rolling max of the *previous* 'window' days (as of yesterday)
+        # Using shift(1) to exclude today from the window, then taking rolling max
+        rs_high_prev = rs_line.shift(1).rolling(window).max().iloc[-1]
+        price_high_prev = close.shift(1).rolling(window).max().iloc[-1]
+
+        current_rs = rs_line.iloc[-1]
+        current_price = close.iloc[-1]
+
+        # Check RS Breakout (Current RS >= Previous 50-day High)
+        rs_breakout = current_rs >= rs_high_prev
+
+        # Check Price in Base (Price < Previous 50-day High AND Price > 85% of High)
+        # This indicates the price is consolidating/basing near highs but hasn't broken out yet
+        price_in_base = (current_price < price_high_prev) and (current_price > price_high_prev * 0.85)
+
+        is_blue_sky = bool(rs_breakout and price_in_base)
+
+        return {
+            'is_blue_sky': is_blue_sky,
+            'rs_breakout': rs_breakout,
+            'price_in_base': price_in_base,
+            'current_rs': current_rs,
+            'prev_rs_high': rs_high_prev,
+            'current_price': current_price,
+            'prev_price_high': price_high_prev
+        }
     
     def _interpret_rs_line_strength(self, percent_from_high: float) -> str:
         """RS Lineの強さを解釈"""
