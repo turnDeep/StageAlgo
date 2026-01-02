@@ -36,6 +36,17 @@ def process_ticker(ticker, spy_df):
 
         # Analysis
         try:
+            # Liquidity Filter: 50-day Avg Dollar Volume >= $10M
+            if 'Close' in hist.columns and 'Volume' in hist.columns:
+                dollar_vol = hist['Close'] * hist['Volume']
+                avg_dollar_vol = dollar_vol.rolling(window=50).mean().iloc[-1]
+
+                # Check for NaN (not enough data) or Low Liquidity
+                if pd.isna(avg_dollar_vol) or avg_dollar_vol < 10_000_000:
+                    return None
+            else:
+                return None
+
             # A. Trend Template
             is_trend = indicators.check_trend_template(hist)
             if not is_trend:
@@ -99,7 +110,7 @@ def process_ticker(ticker, spy_df):
         return None
 
 def run():
-    print("Starting Alpha-Synthesis System (FULL RUN - SMR Rating A/B & Strict RS Filter)...")
+    print("Starting Alpha-Synthesis System (FULL RUN - SMR Rating A/B & Strict RS Filter & >$10M Liq)...")
 
     # 1. Market Regime
     is_risk_on = check_macro_environment()
