@@ -8,3 +8,5 @@ tqdm
 pytz
 python-dotenv
 Pillow
+pandas_datareader
+setuptools
