@@ -51,6 +51,9 @@ def process_ticker(ticker, spy_df):
             if smr_rating not in ['A', 'B']:
                 return None
 
+            # Ensure SMR Value is Int
+            smr_rating_value = int(smr_rating_value)
+
             # RS Analysis using RSCalculator
             rs_calc = RSCalculator(hist, spy_df)
             raw_rs_score = rs_calc.calculate_ibd_rs_score().iloc[-1]
@@ -174,6 +177,9 @@ def run():
 
     print(f"Filtered Candidates (RS >= 80): {len(filtered_df)}")
 
+    # Remove duplicates
+    filtered_df.drop_duplicates(subset=['Ticker'], inplace=True)
+
     # Output
     timestamp = datetime.datetime.now().strftime('%Y%m%d')
     filename = f"alpha_synthesis_results_SMR_AB_RS80_{timestamp}.csv"
@@ -181,7 +187,9 @@ def run():
     filtered_df = filtered_df.sort_values(by='RS_Rating', ascending=False)
 
     # Select columns
-    cols = ['Ticker', 'Close', 'SMR_Rating', 'RS_Rating', 'Raw_RS_Score', 'Is_Blue_Sky',
+    # User requested integer values. SMR_Rating is Grade (A/B), SMR_Rating_Value is Int (0-100).
+    # Providing both for clarity.
+    cols = ['Ticker', 'Close', 'SMR_Rating', 'SMR_Rating_Value', 'RS_Rating', 'Raw_RS_Score', 'Is_Blue_Sky',
             'RS_Line_New_High', 'Price_In_Base', 'Above_AVWAP', 'VCP_Tightness', 'Volume_DryUp']
 
     filtered_df[cols].to_csv(filename, index=False)
