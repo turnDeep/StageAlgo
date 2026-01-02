@@ -22,7 +22,7 @@ class AlphaSynthesisDataLoader:
             hist = obj.history(period="2y")
 
             # Random sleep to avoid rate limits
-            time.sleep(random.uniform(1.5, 3.0))
+            time.sleep(random.uniform(0.5, 1.0))
 
             if hist.empty:
                 return None, None
@@ -33,7 +33,7 @@ class AlphaSynthesisDataLoader:
             financials = None
             try:
                 financials = obj.financials
-                time.sleep(random.uniform(1.5, 3.0))
+                time.sleep(random.uniform(0.5, 1.0))
             except Exception:
                 # Financials often fail or are empty for ETFs/small caps.
                 # Don't fail the whole fetch.
@@ -42,6 +42,8 @@ class AlphaSynthesisDataLoader:
             return hist, financials
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"Error fetching {ticker}: {e}")
             time.sleep(10) # Backoff
             return None, None
