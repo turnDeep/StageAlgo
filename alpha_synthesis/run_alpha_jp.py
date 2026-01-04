@@ -247,33 +247,5 @@ def run():
     filtered_df[cols].to_csv(filename, index=False)
     print(f"Final results saved to {filename}")
 
-    # Generate Japanese Report
-    report_file = f"alpha_synthesis_jp_report_{timestamp}.txt"
-    with open(report_file, "w", encoding="utf-8") as f:
-        f.write(f"Alpha-Synthesis 日本株分析レポート ({timestamp})\n")
-        f.write("==================================================\n\n")
-        f.write(f"分析対象銘柄数: {len(tickers)}\n")
-        f.write(f"初期候補（トレンド適合 + 最低流動性 + SMR B以上）: {len(df_candidates)}\n")
-        f.write(f"最終選抜（RS Rating >= 80）: {len(filtered_df)}\n\n")
-        f.write("【選抜基準の概要】\n")
-        f.write("1. トレンドテンプレート: 200日移動平均線が上昇中など、Minervini流のトレンド定義を満たす銘柄。\n")
-        f.write("2. 流動性フィルタ: 直近20日の平均売買代金が5億円以上。\n")
-        f.write("3. SMR評価: ファンダメンタルズ（売上成長、利益率、ROE）が優秀（AまたはB評価）。\n")
-        f.write("4. RS Rating: TOPIX（1306.T）をベンチマークとし、相対強度が上位20%（80以上）の銘柄。\n")
-        f.write("5. 市場構造対応: オプション分析（Phase 4）は日本市場の特性（流動性欠如）を考慮し、システムから除外しました。\n\n")
-        f.write("【注目銘柄リスト (Top 20)】\n")
-
-        for idx, row in filtered_df.head(20).iterrows():
-            f.write(f"- {row['Ticker']} (¥{row['Close']:.0f}): RS {row['RS_Rating']}, SMR {row['SMR_Rating']}\n")
-            if row['Is_Blue_Sky']:
-                 f.write(f"  ★ 青天井（Blue Sky）セットアップ: 上値抵抗なし、新高値圏。\n")
-            if row['VCP_Tightness'] and row['Volume_DryUp']:
-                 f.write(f"  ★ VCPパターン（ボラティリティ低下＋出来高枯渇）を確認。\n")
-
-        f.write("\n※ 'Trading_Value_JPY' は平均売買代金（円）です。\n")
-        f.write("※ 本システムは情報提供のみを目的としており、投資助言ではありません。\n")
-
-    print(f"Report saved to {report_file}")
-
 if __name__ == "__main__":
     run()
