@@ -10,3 +10,4 @@ python-dotenv
 Pillow
 pandas_datareader
 setuptools
+mplfinance

@@ -1,18 +1,21 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import mplfinance as mpf
 import argparse
 import sys
 import os
+from scipy.signal import argrelextrema
+from datetime import timedelta
 
 # Add alpha_synthesis to path to import data_loader
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data_loader import AlphaSynthesisDataLoader
 
 class ZigZagPlotter:
-    def __init__(self, ticker, threshold_pct=3.0):
+    def __init__(self, ticker, order=5):
         self.ticker = ticker
-        self.threshold_pct = threshold_pct
+        self.order = order
         self.df = None
         self.pivots = [] # List of {'date': date, 'price': price, 'type': 'high'/'low'}
 
@@ -38,147 +41,227 @@ class ZigZagPlotter:
         finally:
             loader.close()
 
-    def calculate_zigzag(self):
+    def calculate_zigzag_scipy(self):
         """
-        Calculates ZigZag pivots based on percentage threshold.
-        Algorithm:
-        1. Track current trend (1 = Up, -1 = Down)
-        2. Track last extreme price and index
-        3. If price reverses by > threshold, confirm last extreme as pivot, switch trend.
+        Calculates ZigZag pivots using scipy.signal.argrelextrema.
         """
         if self.df is None or self.df.empty:
             return
 
-        dates = self.df.index
+        # 1. Find local maxs and mins
         highs = self.df['High'].values
         lows = self.df['Low'].values
-        closes = self.df['Close'].values
+        dates = self.df.index
 
-        # Initialize
-        # We need a starting point. Let's assume neutral or start with first bar.
+        # Find indexes of local extrema
+        # order=N means strictly greater than N neighbors on each side
+        high_idxs = argrelextrema(highs, np.greater, order=self.order)[0]
+        low_idxs = argrelextrema(lows, np.less, order=self.order)[0]
 
-        # State variables
-        current_trend = 0 # 0: Unknown, 1: Up, -1: Down
-        last_pivot_idx = 0
-        last_pivot_price = closes[0]
+        # Create a combined list of candidates
+        candidates = []
+        for idx in high_idxs:
+            candidates.append({'idx': idx, 'date': dates[idx], 'price': highs[idx], 'type': 'high'})
+        for idx in low_idxs:
+            candidates.append({'idx': idx, 'date': dates[idx], 'price': lows[idx], 'type': 'low'})
 
-        # Temporary extreme tracking
-        temp_extreme_idx = 0
-        temp_extreme_price = closes[0]
+        # Sort by index (time)
+        candidates.sort(key=lambda x: x['idx'])
 
-        self.pivots = []
+        if not candidates:
+            self.pivots = []
+            return
 
-        # Start scanning
-        for i in range(1, len(closes)):
-            curr_high = highs[i]
-            curr_low = lows[i]
-            curr_close = closes[i]
+        # 2. Filter for Alternating High/Low (ZigZag Logic)
+        final_pivots = []
+        if not candidates:
+            return
 
-            if current_trend == 0:
-                # establish initial trend
-                change_from_start = (curr_close - temp_extreme_price) / temp_extreme_price * 100
-                if change_from_start > self.threshold_pct:
-                    current_trend = 1 # Up
-                    temp_extreme_idx = i
-                    temp_extreme_price = curr_high
-                    # The start was a low
-                    self.pivots.append({'date': dates[0], 'price': lows[0], 'type': 'low', 'idx': 0})
-                elif change_from_start < -self.threshold_pct:
-                    current_trend = -1 # Down
-                    temp_extreme_idx = i
-                    temp_extreme_price = curr_low
-                    # The start was a high
-                    self.pivots.append({'date': dates[0], 'price': highs[0], 'type': 'high', 'idx': 0})
+        # Simple stack-based filtering to ensure alternating high/low
+        stack = [candidates[0]]
 
-            elif current_trend == 1: # Uptrend
-                if curr_high > temp_extreme_price:
-                    # New high in uptrend, update extreme
-                    temp_extreme_price = curr_high
-                    temp_extreme_idx = i
-                elif curr_low < temp_extreme_price * (1 - self.threshold_pct/100):
-                    # Reversal detected!
-                    # The previous extreme high is now a confirmed pivot
-                    self.pivots.append({'date': dates[temp_extreme_idx], 'price': temp_extreme_price, 'type': 'high', 'idx': temp_extreme_idx})
+        for current in candidates[1:]:
+            last = stack[-1]
 
-                    # Switch to Downtrend
-                    current_trend = -1
-                    temp_extreme_price = curr_low
-                    temp_extreme_idx = i
+            if last['type'] == current['type']:
+                # Same type, keep the more extreme one
+                if last['type'] == 'high':
+                    if current['price'] > last['price']:
+                        stack.pop()
+                        stack.append(current)
+                else: # low
+                    if current['price'] < last['price']:
+                        stack.pop()
+                        stack.append(current)
+            else:
+                # Different type (High -> Low or Low -> High)
+                stack.append(current)
 
-            elif current_trend == -1: # Downtrend
-                if curr_low < temp_extreme_price:
-                    # New low in downtrend, update extreme
-                    temp_extreme_price = curr_low
-                    temp_extreme_idx = i
-                elif curr_high > temp_extreme_price * (1 + self.threshold_pct/100):
-                    # Reversal detected!
-                    # The previous extreme low is now a confirmed pivot
-                    self.pivots.append({'date': dates[temp_extreme_idx], 'price': temp_extreme_price, 'type': 'low', 'idx': temp_extreme_idx})
-
-                    # Switch to Uptrend
-                    current_trend = 1
-                    temp_extreme_price = curr_high
-                    temp_extreme_idx = i
-
-        # Add the last extreme as a pending pivot
-        if current_trend == 1:
-             self.pivots.append({'date': dates[temp_extreme_idx], 'price': temp_extreme_price, 'type': 'high', 'idx': temp_extreme_idx})
-        elif current_trend == -1:
-             self.pivots.append({'date': dates[temp_extreme_idx], 'price': temp_extreme_price, 'type': 'low', 'idx': temp_extreme_idx})
+        self.pivots = stack
 
     def plot(self):
-        """Plots the price and ZigZag lines."""
+        """Plots using mplfinance."""
         if self.df is None or not self.pivots:
             print("No data or pivots to plot.")
             return
 
-        plt.figure(figsize=(14, 8))
+        # Pre-calc 50-day SMA on full dataframe BEFORE slicing
+        self.df['VolumeSMA50'] = self.df['Volume'].rolling(window=50).mean()
 
-        # Plot Candles (Simplified as High/Low bars or just Close line for clarity with ZigZag)
-        plt.plot(self.df.index, self.df['Close'], color='lightgray', label='Price (Close)', linewidth=1)
+        # Filter data for display (last 1 year)
+        one_year_ago = self.df.index[-1] - timedelta(days=365)
+        plot_df = self.df.loc[one_year_ago:].copy()
 
-        # Plot ZigZag Lines
-        pivot_dates = [p['date'] for p in self.pivots]
-        pivot_prices = [p['price'] for p in self.pivots]
+        if plot_df.empty:
+             plot_df = self.df
 
-        plt.plot(pivot_dates, pivot_prices, color='blue', marker='o', linestyle='-', linewidth=1.5, markersize=4, label='ZigZag')
+        # Filter and Map Pivots for mplfinance
+        # mplfinance removes gaps, so we need to map dates to integer indices (0 to N-1)
+        start_date = plot_df.index[0]
+        display_pivots = [p for p in self.pivots if p['date'] >= start_date]
 
-        # Annotate Contractions (High -> Low)
-        for i in range(len(self.pivots) - 1):
-            p1 = self.pivots[i]
-            p2 = self.pivots[i+1]
+        # Add prior pivot to connect line
+        prior_pivots = [p for p in self.pivots if p['date'] < start_date]
+        if prior_pivots:
+            display_pivots.insert(0, prior_pivots[-1])
 
+        # Map dates to row numbers in plot_df
+        # Create a mapping dictionary
+        date_to_idx = {date: i for i, date in enumerate(plot_df.index)}
+
+        zigzag_indices = []
+        zigzag_prices = []
+
+        annotates = [] # list of (idx, price, text)
+
+        for i in range(len(display_pivots) - 1):
+            p1 = display_pivots[i]
+            p2 = display_pivots[i+1]
+
+            # Map p1
+            if p1['date'] in date_to_idx:
+                idx1 = date_to_idx[p1['date']]
+            elif p1['date'] < start_date:
+                idx1 = 0
+            else:
+                continue # Should not happen if filtered
+
+            # Map p2
+            if p2['date'] in date_to_idx:
+                idx2 = date_to_idx[p2['date']]
+            else:
+                continue
+
+            # Store line points
+            if not zigzag_indices or zigzag_indices[-1] != idx1:
+                zigzag_indices.append(idx1)
+                zigzag_prices.append(p1['price'])
+
+            zigzag_indices.append(idx2)
+            zigzag_prices.append(p2['price'])
+
+            # Contraction Annotation
             if p1['type'] == 'high' and p2['type'] == 'low':
-                # This is a contraction/pullback
-                change_pct = (p2['price'] - p1['price']) / p1['price'] * 100
+                 mid_idx = (idx1 + idx2) / 2
+                 mid_price = (p1['price'] + p2['price']) / 2
+                 change_pct = (p2['price'] - p1['price']) / p1['price'] * 100
+                 text = f"{change_pct:.1f}%"
+                 annotates.append((mid_idx, mid_price, text))
 
-                # Midpoint for text
-                mid_date = p1['date'] + (p2['date'] - p1['date']) / 2
-                mid_price = (p1['price'] + p2['price']) / 2
+        # Add labels for pivots
+        pivot_labels = []
+        for p in display_pivots:
+            if p['date'] in date_to_idx:
+                idx = date_to_idx[p['date']]
+                date_str = p['date'].strftime('%m-%d')
+                pivot_labels.append((idx, p['price'], date_str))
 
-                # Annotate
-                text = f"{change_pct:.1f}%"
-                plt.annotate(text, xy=(mid_date, mid_price),
-                             xytext=(0, -10), textcoords='offset points',
-                             ha='center', va='top', color='red', weight='bold', fontsize=10,
-                             arrowprops=dict(arrowstyle='-', color='red', alpha=0.3))
+        # Custom Style
+        mc = mpf.make_marketcolors(up='#2ca02c', down='#d62728',
+                                   edge={'up':'#2ca02c', 'down':'#d62728'},
+                                   wick={'up':'#2ca02c', 'down':'#d62728'},
+                                   volume={'up':'#2ca02c', 'down':'#d62728'},
+                                   ohlc='black')
 
-        plt.title(f"{self.ticker} - Price Structure & Contraction Waves (ZigZag {self.threshold_pct}%)")
-        plt.ylabel("Price")
-        plt.legend()
-        plt.grid(True, which='both', linestyle='--', alpha=0.5)
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', gridaxis='both')
 
         filename = f"{self.ticker}_zigzag.png"
+
+        # Plot
+        fig, axlist = mpf.plot(plot_df, type='candle', volume=True, style=s,
+                               title=f"{self.ticker} - Price Structure & VCP (Last 1 Year)",
+                               ylabel='Price', ylabel_lower='Volume',
+                               returnfig=True, figsize=(14, 10),
+                               datetime_format='%m/%d', xrotation=0)
+
+        ax_main = axlist[0]
+        # With volume=True, axlist usually: [Main, MainTwin, Volume, VolumeTwin] (size 4)
+        # Or [Main, Volume] (size 2) if twins are not created.
+        # Typically mpf creates 2 axes. Let's use index 2 (if available) or -2.
+        # But wait, `returnfig=True` returns (fig, axlist).
+        # Let's target the known volume axis.
+        # If len(axlist) > 2, usually axlist[-2] is the volume axis (before volume twin).
+        # If len(axlist) == 2, axlist[1] is volume.
+        # Safe bet: axlist[-2] if len >= 4, else axlist[-1]?
+        # Actually, simpler: `mpf.plot` with `volume=True` typically returns 2 axes in the list if no other panels.
+        # Let's assume axlist[-2] for standard "Main + Volume" setup with twins potentially existing.
+        # If twins don't exist, axlist might be just 2 elements.
+
+        ax_vol = None
+        if len(axlist) >= 2:
+             # Typically axlist[0] = price, axlist[2] = volume (if twins exist).
+             # If no twins, axlist[0] = price, axlist[1] = volume.
+             # Let's iterate to find the one with the correct ylim? No.
+             # The standard return is a list of axes.
+             # Let's try grabbing the one that is NOT the main one.
+             ax_vol = axlist[2] if len(axlist) > 2 else axlist[1]
+
+        # Overlay ZigZag Line
+        ax_main.plot(zigzag_indices, zigzag_prices, color='blue', marker='o', linestyle='-', linewidth=1.5, markersize=4, label='ZigZag')
+
+        # Overlay Annotations (Contraction %)
+        for (x, y, text) in annotates:
+            ax_main.annotate(text, xy=(x, y),
+                             xytext=(0, -15), textcoords='offset points',
+                             ha='center', va='top', color='blue', weight='bold', fontsize=11,
+                             arrowprops=dict(arrowstyle='-', color='blue', alpha=0.3))
+
+        # Overlay Pivot Date Labels
+        for (x, y, text) in pivot_labels:
+            ax_main.text(x, y, text, fontsize=9, ha='right', va='bottom', color='black', fontweight='bold')
+
+        ax_main.legend(loc='upper left')
+
+        # --- Annotate Relative Volume on Last Bar ---
+        last_idx = len(plot_df) - 1
+        last_vol = plot_df['Volume'].iloc[-1]
+        last_sma = plot_df['VolumeSMA50'].iloc[-1]
+
+        if pd.notna(last_sma) and last_sma > 0 and ax_vol:
+            vol_pct = (last_vol / last_sma) * 100
+            vol_text = f"{vol_pct:.0f}%"
+
+            # Place text above the bar
+            ax_vol.text(last_idx, last_vol, vol_text,
+                        ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
+
+        # Save
         plt.savefig(filename)
         print(f"Plot saved to {filename}")
+        plt.close(fig) # Close to free memory
+
+        print(f"\nDetected Pivots for {self.ticker} (Last 1 Year):")
+        for p in display_pivots:
+             if p['date'] >= start_date:
+                print(f"{p['date'].strftime('%Y-%m-%d')} : {p['type'].upper()} @ {p['price']:.2f}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ZigZag Plotter for VCP Visualization")
+    parser = argparse.ArgumentParser(description="ZigZag Plotter using mplfinance")
     parser.add_argument("-t", "--ticker", type=str, required=True, help="Stock Ticker")
-    parser.add_argument("--threshold", type=float, default=5.0, help="ZigZag Threshold % (default: 5.0)")
+    parser.add_argument("--order", type=int, default=3, help="Order for argrelextrema (default: 3)")
     args = parser.parse_args()
 
-    plotter = ZigZagPlotter(args.ticker, threshold_pct=args.threshold)
+    plotter = ZigZagPlotter(args.ticker, order=args.order)
     if plotter.fetch_data():
-        plotter.calculate_zigzag()
+        plotter.calculate_zigzag_scipy()
         plotter.plot()
