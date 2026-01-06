@@ -64,6 +64,11 @@ def process_ticker(ticker, spy_df):
             # Structure Analysis (Phase 3)
             avwap = indicators.calculate_anchored_vwap(hist)
             is_vcp, vcp_details = indicators.check_vcp(hist)
+            adr_percent = indicators.calculate_adr_percent(hist)
+
+            # ADR Filter: > 4% (Explosive Potential)
+            if adr_percent is None or adr_percent < 4.0:
+                return None
 
             last_close = hist['Close'].iloc[-1]
 
@@ -78,6 +83,7 @@ def process_ticker(ticker, spy_df):
                 'Close': last_close,
                 'SMR_Rating_Value': smr_rating_value,
                 'SMR_Rating': smr_rating,
+                'ADR_Percent': round(adr_percent, 2),
                 'Raw_RS_Score': raw_rs_score, # Raw score for later ranking
                 'Is_Blue_Sky': blue_sky_res['is_blue_sky'],
                 'RS_Line_New_High': blue_sky_res['rs_breakout'],
@@ -191,7 +197,7 @@ def run():
     # Select columns
     # User requested integer values. SMR_Rating is Grade (A/B), SMR_Rating_Value is Int (0-100).
     # Providing both for clarity.
-    cols = ['Ticker', 'Close', 'SMR_Rating', 'SMR_Rating_Value', 'RS_Rating', 'Raw_RS_Score', 'Is_Blue_Sky',
+    cols = ['Ticker', 'Close', 'SMR_Rating', 'SMR_Rating_Value', 'ADR_Percent', 'RS_Rating', 'Raw_RS_Score', 'Is_Blue_Sky',
             'RS_Line_New_High', 'Price_In_Base', 'Above_AVWAP', 'VCP_Tightness', 'Volume_DryUp']
 
     filtered_df[cols].to_csv(filename, index=False)
