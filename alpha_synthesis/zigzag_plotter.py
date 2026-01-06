@@ -108,6 +108,9 @@ class ZigZagPlotter:
         # Pre-calc 50-day SMA on full dataframe BEFORE slicing
         self.df['VolumeSMA50'] = self.df['Volume'].rolling(window=50).mean()
 
+        # Debug print
+        print(f"Volume SMA 50 stats: count={self.df['VolumeSMA50'].count()}, min={self.df['VolumeSMA50'].min()}, max={self.df['VolumeSMA50'].max()}")
+
         # Filter data for display (last 1 year)
         one_year_ago = self.df.index[-1] - timedelta(days=365)
         plot_df = self.df.loc[one_year_ago:].copy()
@@ -187,34 +190,28 @@ class ZigZagPlotter:
 
         filename = f"{self.ticker}_zigzag.png"
 
+        # Setup Addplot for Volume SMA
+        ap = []
+        if 'VolumeSMA50' in plot_df.columns:
+            # Use secondary_y=False to ensure it plots on the volume scale
+            # Increase width for visibility
+            # Ensure panel=1 matches the volume panel index
+            ap.append(mpf.make_addplot(plot_df['VolumeSMA50'], panel=1, color='orange', width=2.5, secondary_y=False))
+
         # Plot
-        fig, axlist = mpf.plot(plot_df, type='candle', volume=True, style=s,
+        fig, axlist = mpf.plot(plot_df, type='candle', volume=True, addplot=ap, style=s,
                                title=f"{self.ticker} - Price Structure & VCP (Last 1 Year)",
                                ylabel='Price', ylabel_lower='Volume',
                                returnfig=True, figsize=(14, 10),
                                datetime_format='%m/%d', xrotation=0)
 
         ax_main = axlist[0]
-        # With volume=True, axlist usually: [Main, MainTwin, Volume, VolumeTwin] (size 4)
-        # Or [Main, Volume] (size 2) if twins are not created.
-        # Typically mpf creates 2 axes. Let's use index 2 (if available) or -2.
-        # But wait, `returnfig=True` returns (fig, axlist).
-        # Let's target the known volume axis.
-        # If len(axlist) > 2, usually axlist[-2] is the volume axis (before volume twin).
-        # If len(axlist) == 2, axlist[1] is volume.
-        # Safe bet: axlist[-2] if len >= 4, else axlist[-1]?
-        # Actually, simpler: `mpf.plot` with `volume=True` typically returns 2 axes in the list if no other panels.
-        # Let's assume axlist[-2] for standard "Main + Volume" setup with twins potentially existing.
-        # If twins don't exist, axlist might be just 2 elements.
-
         ax_vol = None
         if len(axlist) >= 2:
-             # Typically axlist[0] = price, axlist[2] = volume (if twins exist).
-             # If no twins, axlist[0] = price, axlist[1] = volume.
-             # Let's iterate to find the one with the correct ylim? No.
-             # The standard return is a list of axes.
-             # Let's try grabbing the one that is NOT the main one.
-             ax_vol = axlist[2] if len(axlist) > 2 else axlist[1]
+             # Typically [Price, PriceTwin, Volume, VolumeTwin]
+             # We want the Volume axis which shares scale with the bars.
+             # This is usually index 2 (if twins exist) or index -2.
+             ax_vol = axlist[-2]
 
         # Overlay ZigZag Line
         ax_main.plot(zigzag_indices, zigzag_prices, color='blue', marker='o', linestyle='-', linewidth=1.5, markersize=4, label='ZigZag')
