@@ -208,3 +208,19 @@ def check_vcp(df):
 
     except Exception as e:
         return False, {"error": str(e)}
+
+def calculate_adr_percent(df, window=20):
+    """
+    Calculates Average Daily Range Percentage (ADR%) over a specified window.
+    Formula: Average of ((High / Low) - 1) * 100 over the last 'window' days.
+    """
+    try:
+        if len(df) < window:
+            return None
+
+        daily_range_pct = (df['High'] / df['Low'] - 1) * 100
+        adr_percent = daily_range_pct.rolling(window=window).mean().iloc[-1]
+
+        return adr_percent
+    except Exception:
+        return None
