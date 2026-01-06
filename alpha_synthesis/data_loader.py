@@ -2,6 +2,7 @@ import yfinance as yf
 from curl_cffi import requests as curl_requests
 import time
 import random
+import traceback
 
 class AlphaSynthesisDataLoader:
     def __init__(self):
@@ -13,40 +14,59 @@ class AlphaSynthesisDataLoader:
         Fetches history and financials for a ticker.
         Returns (history_df, financials_df) or (None, None) if failed.
         """
-        try:
-            obj = yf.Ticker(ticker, session=self.session)
-
-            # Fetch history
-            # Need enough for 200MA and 52-week high anchor (252 days)
-            # Fetching 2y to be safe
-            hist = obj.history(period="2y")
-
-            # Random sleep to avoid rate limits
-            time.sleep(random.uniform(0.5, 1.0))
-
-            if hist.empty:
-                return None, None
-
-            # Fetch financials
-            # Note: financial fetch might be separate request.
-            # Accessing .financials triggers a request.
-            financials = None
+        retries = 3
+        for attempt in range(retries):
             try:
-                financials = obj.financials
+                obj = yf.Ticker(ticker, session=self.session)
+
+                # Fetch history
+                # Need enough for 200MA and 52-week high anchor (252 days)
+                # Fetching 2y to be safe
+                hist = obj.history(period="2y")
+
+                # Random sleep to avoid rate limits
                 time.sleep(random.uniform(0.5, 1.0))
-            except Exception:
-                # Financials often fail or are empty for ETFs/small caps.
-                # Don't fail the whole fetch.
-                pass
 
-            return hist, financials
+                if hist is None or hist.empty:
+                    # Retry if empty result but no error raised (sometimes happens)
+                    if attempt < retries - 1:
+                        time.sleep(2)
+                        continue
+                    return None, None
 
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"Error fetching {ticker}: {e}")
-            time.sleep(10) # Backoff
-            return None, None
+                # Fetch financials
+                # Note: financial fetch might be separate request.
+                # Accessing .financials triggers a request.
+                financials = None
+                try:
+                    financials = obj.financials
+                    time.sleep(random.uniform(0.5, 1.0))
+                except Exception:
+                    # Financials often fail or are empty for ETFs/small caps.
+                    # Don't fail the whole fetch.
+                    pass
+
+                return hist, financials
+
+            except TypeError as e:
+                # Catch yfinance "NoneType is not subscriptable" error
+                # This usually means blocked request or empty JSON
+                # print(f"  [Attempt {attempt+1}/{retries}] blocked/empty for {ticker}: {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 + attempt * 2) # Exponential backoff
+                    continue
+                else:
+                    return None, None
+
+            except Exception as e:
+                # traceback.print_exc()
+                # print(f"Error fetching {ticker}: {e}")
+                if attempt < retries - 1:
+                    time.sleep(5)
+                else:
+                    return None, None
+
+        return None, None
 
     def close(self):
         self.session.close()
