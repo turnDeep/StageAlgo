@@ -104,9 +104,14 @@ class RDTChartGenerator:
         # Main Panel: Enable left ticks
         axes[0].tick_params(axis='y', labelleft=True)
 
-        # RRS Panel: Disable left ticks (as per latest request)
+        # RRS Panel: Disable left ticks and labels strictly (as per latest request)
+        # We target axes[2] (Primary RRS) and axes[3] (Secondary RRS if present)
+        # to remove any lingering grid numbers like 0.050, 0.025 etc.
         if len(axes) > 2:
-            axes[2].tick_params(axis='y', labelleft=False)
+            axes[2].tick_params(axis='y', which='both', left=False, labelleft=False)
+
+        if len(axes) > 3:
+            axes[3].tick_params(axis='y', which='both', left=False, labelleft=False)
 
         # Save
         fig.savefig(output_filename, bbox_inches='tight')
