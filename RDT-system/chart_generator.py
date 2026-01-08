@@ -42,15 +42,11 @@ class RDTChartGenerator:
             print("Error: Plot DataFrame is empty after slicing.")
             return
 
-        # Align SPY to plot_df for the overlay
-        spy_plot = spy_df.reindex(plot_df.index)['Close']
-
         # 4. Prepare Plots
         apds = []
 
-        # --- Panel 0: Main (Candles) + SPY Overlay ---
-        # SPY Overlay (Gray Line, Background-ish)
-        apds.append(mpf.make_addplot(spy_plot, panel=0, color='gray', secondary_y=True, width=1.0, alpha=0.5, ylabel='SPY'))
+        # --- Panel 0: Main (Candles) ---
+        # SPY overlay removed per user request
 
         # --- Panel 1: RRS (Real Relative Strength) ---
         # RRS Line (Orange)
