@@ -42,26 +42,30 @@ class RDTChartGenerator:
             print("Error: Plot DataFrame is empty after slicing.")
             return
 
-        # Align SPY to plot_df for the overlay
-        spy_plot = spy_df.reindex(plot_df.index)['Close']
-
         # 4. Prepare Plots
         apds = []
 
-        # --- Panel 0: Main (Candles) + SPY Overlay ---
-        # SPY Overlay (Gray Line, Background-ish)
-        apds.append(mpf.make_addplot(spy_plot, panel=0, color='gray', secondary_y=True, width=1.0, alpha=0.5, ylabel='SPY'))
+        # --- Panel 0: Main (Candles) ---
+        # SPY overlay removed per user request
 
         # --- Panel 1: RRS (Real Relative Strength) ---
         # RRS Line (Orange)
+        # Calculate symmetric limits to center 0
+        rrs_max = plot_df['RRS'].abs().max()
+        if pd.isna(rrs_max) or rrs_max == 0:
+            rrs_max = 1.0
+        rrs_ylim = (-rrs_max * 1.1, rrs_max * 1.1)
+
         zero_line = pd.Series(0, index=plot_df.index)
-        apds.append(mpf.make_addplot(plot_df['RRS'], panel=1, color='orange', width=1.5, ylabel='RRS'))
+        apds.append(mpf.make_addplot(plot_df['RRS'], panel=1, color='orange', width=1.5, ylabel='RRS', ylim=rrs_ylim))
         apds.append(mpf.make_addplot(zero_line, panel=1, color='gray', linestyle='--', width=0.8))
 
         # --- Panel 2: Volume + RVol Overlay ---
         # Overlay: RVol (Blue Line) on Volume Panel (2) with Secondary Y-Axis
         # We use secondary_y=True because RVol (ratio ~1.0) scale is different from Volume (millions).
+        rvol_line = pd.Series(1.5, index=plot_df.index)
         apds.append(mpf.make_addplot(plot_df['RVol'], panel=2, color='blue', width=1.2, secondary_y=True, ylabel='RVol'))
+        apds.append(mpf.make_addplot(rvol_line, panel=2, color='gray', linestyle='--', width=0.8, secondary_y=True))
 
         # 5. Styling
         mc = mpf.make_marketcolors(up='green', down='red', edge='inherit', wick='inherit', volume='inherit')
@@ -88,6 +92,21 @@ class RDTChartGenerator:
 
         # Set Title on the Main Axis (Top Panel)
         axes[0].set_title(f'{ticker} - D1', loc='left', fontsize=12)
+
+        # Enable left-side ticks for Main Panel (axes[0]) and RRS Panel (axes[2])
+        # Note: mplfinance axes list order with 3 panels (Main, RRS, Volume)
+        # axes[0] = Main Panel
+        # axes[2] = Panel 1 (RRS)
+        # axes[4] = Panel 2 (Volume)
+        # We assume standard structure; if secondary axes exist, indices might shift,
+        # but with y_on_right=True, the primary axes are usually the ones we want to enable 'labelleft' on.
+
+        # Main Panel: Enable left ticks
+        axes[0].tick_params(axis='y', labelleft=True)
+
+        # RRS Panel: Disable left ticks (as per latest request)
+        if len(axes) > 2:
+            axes[2].tick_params(axis='y', labelleft=False)
 
         # Save
         fig.savefig(output_filename, bbox_inches='tight')
