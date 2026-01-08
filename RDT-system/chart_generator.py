@@ -104,9 +104,9 @@ class RDTChartGenerator:
         # Main Panel: Enable left ticks
         axes[0].tick_params(axis='y', labelleft=True)
 
-        # RRS Panel: Enable left ticks
+        # RRS Panel: Disable left ticks (as per latest request)
         if len(axes) > 2:
-            axes[2].tick_params(axis='y', labelleft=True)
+            axes[2].tick_params(axis='y', labelleft=False)
 
         # Save
         fig.savefig(output_filename, bbox_inches='tight')
