@@ -140,3 +140,4 @@ stage_history_*/
 sampled_stocks.csv
 *.html
 data/
+*.png

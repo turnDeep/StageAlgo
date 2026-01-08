@@ -1,0 +1,105 @@
+import pandas as pd
+import mplfinance as mpf
+import matplotlib.pyplot as plt
+from data_fetcher import RDTDataFetcher
+from indicators import RDTIndicators
+import os
+
+class RDTChartGenerator:
+    def __init__(self):
+        self.fetcher = RDTDataFetcher()
+
+    def generate_chart(self, ticker, output_filename=None):
+        print(f"Generating chart for {ticker}...")
+
+        # 1. Fetch Data (2y to ensure enough for indicators)
+        spy_df = self.fetcher.fetch_spy(period="2y")
+        df = self.fetcher.fetch_single(ticker, period="2y")
+
+        if df is None or spy_df is None:
+            print(f"Error: Could not fetch data for {ticker} or SPY.")
+            return
+
+        # 2. Calculate Indicators
+        # This adds 'RRS', 'Vol_SMA_20', etc.
+        df = RDTIndicators.calculate_all(df, spy_df)
+
+        # 3. Slice Data (Last 6 Months)
+        # Ensure datetime index
+        df.index = pd.to_datetime(df.index)
+        spy_df.index = pd.to_datetime(spy_df.index)
+
+        # Calculate start date for 6 months
+        if len(df) > 0:
+            end_date = df.index[-1]
+            start_date = end_date - pd.DateOffset(months=6)
+            plot_df = df.loc[start_date:].copy()
+        else:
+            print("Error: DataFrame is empty.")
+            return
+
+        if plot_df.empty:
+            print("Error: Plot DataFrame is empty after slicing.")
+            return
+
+        # Align SPY to plot_df for the overlay
+        spy_plot = spy_df.reindex(plot_df.index)['Close']
+
+        # 4. Prepare Plots
+        apds = []
+
+        # --- Panel 0: Main (Candles) + SPY Overlay ---
+        # SPY Overlay (Gray Line, Background-ish)
+        apds.append(mpf.make_addplot(spy_plot, panel=0, color='gray', secondary_y=True, width=1.0, alpha=0.5, ylabel='SPY'))
+
+        # --- Panel 1: RRS (Real Relative Strength) ---
+        # RRS Line (Orange)
+        zero_line = pd.Series(0, index=plot_df.index)
+        apds.append(mpf.make_addplot(plot_df['RRS'], panel=1, color='orange', width=1.5, ylabel='RRS'))
+        apds.append(mpf.make_addplot(zero_line, panel=1, color='gray', linestyle='--', width=0.8))
+
+        # --- Panel 2: Volume + RVol Overlay ---
+        # Overlay: RVol (Blue Line) on Volume Panel (2) with Secondary Y-Axis
+        # We use secondary_y=True because RVol (ratio ~1.0) scale is different from Volume (millions).
+        apds.append(mpf.make_addplot(plot_df['RVol'], panel=2, color='blue', width=1.2, secondary_y=True, ylabel='RVol'))
+
+        # 5. Styling
+        mc = mpf.make_marketcolors(up='green', down='red', edge='inherit', wick='inherit', volume='inherit')
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=True, facecolor='white')
+
+        # 6. Plotting
+        if output_filename is None:
+            output_filename = f"{ticker}_chart.png"
+
+        # Omit title arg to avoid validation error for None
+        fig, axes = mpf.plot(
+            plot_df,
+            type='candle',
+            style=s,
+            addplot=apds,
+            volume=True,
+            volume_panel=2,
+            panel_ratios=(3, 1, 1),
+            returnfig=True,
+            figsize=(10, 8),
+            scale_padding={'left': 0.1, 'top': 0.1, 'right': 1.0, 'bottom': 0.1},
+            tight_layout=True
+        )
+
+        # Set Title on the Main Axis (Top Panel)
+        axes[0].set_title(f'{ticker} - D1', loc='left', fontsize=12)
+
+        # Save
+        fig.savefig(output_filename, bbox_inches='tight')
+        print(f"Chart saved to {output_filename}")
+        plt.close(fig)
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-t", "--ticker", type=str, required=True, help="Ticker symbol")
+    parser.add_argument("-o", "--output", type=str, help="Output filename")
+    args = parser.parse_args()
+
+    generator = RDTChartGenerator()
+    generator.generate_chart(args.ticker, args.output)
