@@ -93,6 +93,21 @@ class RDTChartGenerator:
         # Set Title on the Main Axis (Top Panel)
         axes[0].set_title(f'{ticker} - D1', loc='left', fontsize=12)
 
+        # Enable left-side ticks for Main Panel (axes[0]) and RRS Panel (axes[2])
+        # Note: mplfinance axes list order with 3 panels (Main, RRS, Volume)
+        # axes[0] = Main Panel
+        # axes[2] = Panel 1 (RRS)
+        # axes[4] = Panel 2 (Volume)
+        # We assume standard structure; if secondary axes exist, indices might shift,
+        # but with y_on_right=True, the primary axes are usually the ones we want to enable 'labelleft' on.
+
+        # Main Panel: Enable left ticks
+        axes[0].tick_params(axis='y', labelleft=True)
+
+        # RRS Panel: Enable left ticks
+        if len(axes) > 2:
+            axes[2].tick_params(axis='y', labelleft=True)
+
         # Save
         fig.savefig(output_filename, bbox_inches='tight')
         print(f"Chart saved to {output_filename}")
