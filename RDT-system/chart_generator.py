@@ -50,8 +50,15 @@ class RDTChartGenerator:
 
         # --- Panel 1: RRS (Real Relative Strength) ---
         # RRS Line (Orange)
+        # Calculate symmetric limits to center 0
+        rrs_max = plot_df['RRS'].abs().max()
+        if pd.isna(rrs_max) or rrs_max == 0:
+            rrs_max = 1.0
+        rrs_ylim = (-rrs_max * 1.1, rrs_max * 1.1)
+
         zero_line = pd.Series(0, index=plot_df.index)
-        apds.append(mpf.make_addplot(plot_df['RRS'], panel=1, color='orange', width=1.5, ylabel='RRS'))
+        # Remove ylabel per user request
+        apds.append(mpf.make_addplot(plot_df['RRS'], panel=1, color='orange', width=1.5, ylabel='', ylim=rrs_ylim))
         apds.append(mpf.make_addplot(zero_line, panel=1, color='gray', linestyle='--', width=0.8))
 
         # --- Panel 2: Volume + RVol Overlay ---
