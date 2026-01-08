@@ -59,8 +59,9 @@ class RDTChartGenerator:
         apds.append(mpf.make_addplot(zero_line, panel=1, color='gray', linestyle='--', width=0.8))
 
         # --- Panel 2: Volume + RVol Overlay ---
-        # Overlay: Vol_SMA_20 (Blue Line) on Volume Panel (2)
-        apds.append(mpf.make_addplot(plot_df['Vol_SMA_20'], panel=2, color='blue', width=1.2))
+        # Overlay: RVol (Blue Line) on Volume Panel (2) with Secondary Y-Axis
+        # We use secondary_y=True because RVol (ratio ~1.0) scale is different from Volume (millions).
+        apds.append(mpf.make_addplot(plot_df['RVol'], panel=2, color='blue', width=1.2, secondary_y=True, ylabel='RVol'))
 
         # 5. Styling
         mc = mpf.make_marketcolors(up='green', down='red', edge='inherit', wick='inherit', volume='inherit')
