@@ -65,7 +65,13 @@ class RDTIndicators:
 
         # RRS = (Delta_Stock - Expected_Move) / Stock_ATR
         # This normalizes the excess return by the stock's own volatility
-        df['RRS'] = (delta_stock - expected_move) / df['ATR']
+        # We calculate the daily value first
+        df['RRS_Daily'] = (delta_stock - expected_move) / df['ATR']
+
+        # RRS (Smoothed) for Trend Stability
+        # Use a rolling sum (e.g., 12 days) to match 1OSI-style trend indicators
+        # This prevents daily flickering in the screener
+        df['RRS'] = df['RRS_Daily'].rolling(window=12).sum().fillna(0)
 
         return df
 
