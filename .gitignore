@@ -142,3 +142,5 @@ sampled_stocks.csv
 data/
 *.png
 !algo_line_analysis.png
+!findiff_only.png
+!trendln_only.png
