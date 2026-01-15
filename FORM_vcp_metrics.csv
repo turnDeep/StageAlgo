@@ -1,0 +1,12 @@
+Metric,Value
+avwap_current,73.11118878176741
+price_vs_avwap,-0.015335421796307645
+anchor_date,2026-01-13
+trend_template,True
+contractions,"[np.float64(8.46), np.float64(22.54), np.float64(11.43), np.float64(5.09)]"
+is_contracting,True
+tightness_val,5.06
+is_tight,False
+vol_vs_sma,1.54
+is_dry_up,False
+vcp_qualified,False
