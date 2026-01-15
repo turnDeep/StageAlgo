@@ -142,3 +142,4 @@ sampled_stocks.csv
 data/
 *.png
 !algo_lines_chart.png
+!*_zigzag.png
