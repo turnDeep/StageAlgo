@@ -111,9 +111,16 @@ def run():
     # 2. Fetch Benchmark Data (SPY) for RS Calculation
     print("Fetching Benchmark Data (SPY)...")
     try:
-        spy_df = yf.download('SPY', period='2y', progress=False, auto_adjust=True, multi_level_index=False)
+        # Use loader for SPY too to avoid blocking
+        loader = AlphaSynthesisDataLoader()
+        spy_df, _ = loader.fetch_data('SPY')
+        loader.close()
+
         if spy_df is None or spy_df.empty:
-            raise ValueError("SPY data is empty")
+            # Fallback to yf.download if loader fails for SPY
+             spy_df = yf.download('SPY', period='2y', progress=False, auto_adjust=True, multi_level_index=False)
+             if spy_df is None or spy_df.empty:
+                 raise ValueError("SPY data is empty or fetch failed")
     except Exception as e:
         print(f"Error fetching SPY data: {e}. Aborting.")
         return
@@ -126,19 +133,25 @@ def run():
         all_tickers = stock_df['Ticker'].tolist()
         all_tickers = [str(t).replace('.', '-') for t in all_tickers]
 
+        # Shuffle tickers to randomize load
+        random.shuffle(all_tickers)
+
         tickers = all_tickers
-        print(f"Selected ALL {len(tickers)} tickers for analysis (Unique).")
+        print(f"Selected {len(tickers)} tickers for analysis.")
 
     except Exception as e:
         print(f"Error reading stock.csv: {e}")
         return
 
     # 4. Process Tickers in Parallel (Threads)
+    # Reduced workers to prevent rate limits/blocking, but increased from 8 to 12 for production speed
     max_workers = 12
     print(f"Using {max_workers} threads.")
 
     processed_count = 0
     candidate_results = [] # Store in memory first for ranking
+
+    start_time = time.time()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Pass spy_df to process_ticker
@@ -147,7 +160,9 @@ def run():
         for future in concurrent.futures.as_completed(future_to_ticker):
             processed_count += 1
             if processed_count % 100 == 0:
-                print(f"Progress: {processed_count}/{len(tickers)} tickers processed... (Candidates found: {len(candidate_results)})")
+                elapsed = time.time() - start_time
+                rate = processed_count / elapsed
+                print(f"Progress: {processed_count}/{len(tickers)} tickers processed... ({rate:.1f} t/s) (Candidates found: {len(candidate_results)})")
 
             try:
                 res = future.result()
@@ -156,7 +171,7 @@ def run():
                     # print(f"  [CANDIDATE] {res['Ticker']} (SMR: {res['SMR_Rating']}, RawRS: {res['Raw_RS_Score']:.1f})")
 
             except Exception as exc:
-                print(f"Generated an exception: {exc}")
+                pass
 
     # 5. Ranking and Filtering
     print(f"\nProcessing complete. Found {len(candidate_results)} initial candidates (Trend + SMR A/B).")
