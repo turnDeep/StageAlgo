@@ -5,8 +5,8 @@ import random
 
 class AlphaSynthesisDataLoader:
     def __init__(self):
-        # Create session impersonating Chrome
-        self.session = curl_requests.Session(impersonate="chrome")
+        # Session not needed for default yfinance (it handles it)
+        pass
 
     def fetch_data(self, ticker):
         """
@@ -14,7 +14,8 @@ class AlphaSynthesisDataLoader:
         Returns (history_df, financials_df) or (None, None) if failed.
         """
         try:
-            obj = yf.Ticker(ticker, session=self.session)
+            # Use default yfinance session mechanism which is currently more reliable
+            obj = yf.Ticker(ticker)
 
             # Fetch history
             # Need enough for 200MA and 52-week high anchor (252 days)
@@ -49,4 +50,4 @@ class AlphaSynthesisDataLoader:
             return None, None
 
     def close(self):
-        self.session.close()
+        pass
