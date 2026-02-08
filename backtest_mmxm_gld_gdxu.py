@@ -167,7 +167,9 @@ def main():
     signal_ticker = "GLD"
     trade_ticker = "GDXU"
 
-    start_date = (datetime.datetime.now() - timedelta(days=365*4)).strftime('%Y-%m-%d')
+    # Note: GDXU inception date is around 2020. If 4 years of history is requested,
+    # yfinance will return what it has.
+    start_date = (datetime.datetime.now() - timedelta(days=365*14)).strftime('%Y-%m-%d')
     end_date = datetime.datetime.now().strftime('%Y-%m-%d')
 
     print(f"Fetching data for {signal_ticker} and {trade_ticker} from {start_date} to {end_date}...")
@@ -204,12 +206,12 @@ def main():
         simulation_df
     ], axis=1, join='inner')
 
-    # Filter last 1 year
-    one_year_ago = (datetime.datetime.now() - timedelta(days=365)).replace(hour=0, minute=0, second=0, microsecond=0)
-    test_data = combined[combined.index >= one_year_ago].copy()
+    # Filter last 10 years
+    ten_years_ago = (datetime.datetime.now() - timedelta(days=365*10)).replace(hour=0, minute=0, second=0, microsecond=0)
+    test_data = combined[combined.index >= ten_years_ago].copy()
 
     if len(test_data) == 0:
-        print("Error: No data for the last year.")
+        print("Error: No data for the last 10 years.")
         return
 
     # Strategy Execution
