@@ -5,6 +5,27 @@ import datetime
 from datetime import timedelta
 import pandas_ta as ta
 
+def resample_to_4h(df):
+    """
+    Resamples 1h data to 4h bars.
+    """
+    logic = {
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last',
+        'Volume': 'sum'
+    }
+
+    # Check if Volume exists
+    if 'Volume' not in df.columns:
+        if 'Volume' in logic:
+            del logic['Volume']
+
+    # Resample using 4h
+    df_4h = df.resample('4h').agg(logic).dropna()
+    return df_4h
+
 def calculate_swing_points(df, length=5):
     """
     Identifies swing highs and lows.
@@ -49,7 +70,7 @@ def mmxm_strategy(df):
     """
 
     # Add indicators
-    df = calculate_swing_points(df, length=10) # Using 10 for "HTF" significance on Daily
+    df = calculate_swing_points(df, length=10) # Using 10 for "HTF" significance
     df = identify_fvgs(df)
 
     # State variables
@@ -95,17 +116,6 @@ def mmxm_strategy(df):
             active_bull_fvgs = []
 
         # Update Swing Points (Lagging indicator, so we look back to see if i-length was a swing)
-        # Note: 'Is_Swing_High' is forward-looking in rolling calculation if centered=True.
-        # But here we use rolling(window, centered=True).
-        # In real-time backtest, we only know a swing point formed 'length' bars ago.
-        # So we should check if index i-length was a swing point.
-        # However, purely for "Last Swing High" reference, we use the most recent *confirmed* swing.
-
-        # Let's simplify: A Swing High is confirmed when price drops below it for N bars?
-        # Or just use the pre-calculated column, assuming we are looking at *historical* swings that were valid at time i?
-        # Actually, `Is_Swing_High` at index `i` is only known at `i + length`.
-        # So we must look at `i - length` to update `last_swing_high`.
-
         length = 10
         if i > length:
             if is_sh[i-length]:
@@ -165,153 +175,116 @@ def mmxm_strategy(df):
 def main():
     # Configuration
     signal_ticker = "^SOX"
-    bull_ticker = "SOXL"
-    bear_ticker = "SOXS"
+    trade_ticker = "SOXL"
 
-    start_date = (datetime.datetime.now() - timedelta(days=365*14)).strftime('%Y-%m-%d')
-    end_date = datetime.datetime.now().strftime('%Y-%m-%d')
+    # 2 years (730 days) is roughly the limit for hourly data via yfinance
+    print(f"Fetching 1h data for {signal_ticker} and {trade_ticker} (max 730d)...")
 
-    print(f"Fetching data for {signal_ticker}, {bull_ticker}, and {bear_ticker} from {start_date} to {end_date}...")
-
-    signal_data = yf.download(signal_ticker, start=start_date, end=end_date, progress=False)
-    bull_data = yf.download(bull_ticker, start=start_date, end=end_date, progress=False)
-    bear_data = yf.download(bear_ticker, start=start_date, end=end_date, progress=False)
+    signal_data_1h = yf.download(signal_ticker, period="730d", interval="1h", progress=False)
+    trade_data_1h = yf.download(trade_ticker, period="730d", interval="1h", progress=False)
 
     # Ensure timezone-naive index
-    if signal_data.index.tz is not None:
-        signal_data.index = signal_data.index.tz_localize(None)
-    if bull_data.index.tz is not None:
-        bull_data.index = bull_data.index.tz_localize(None)
-    if bear_data.index.tz is not None:
-        bear_data.index = bear_data.index.tz_localize(None)
+    if signal_data_1h.index.tz is not None:
+        signal_data_1h.index = signal_data_1h.index.tz_localize(None)
+    if trade_data_1h.index.tz is not None:
+        trade_data_1h.index = trade_data_1h.index.tz_localize(None)
 
     # Flatten columns
-    if isinstance(signal_data.columns, pd.MultiIndex):
-        signal_data.columns = signal_data.columns.get_level_values(0)
-    if isinstance(bull_data.columns, pd.MultiIndex):
-        bull_data.columns = bull_data.columns.get_level_values(0)
-    if isinstance(bear_data.columns, pd.MultiIndex):
-        bear_data.columns = bear_data.columns.get_level_values(0)
+    if isinstance(signal_data_1h.columns, pd.MultiIndex):
+        signal_data_1h.columns = signal_data_1h.columns.get_level_values(0)
+    if isinstance(trade_data_1h.columns, pd.MultiIndex):
+        trade_data_1h.columns = trade_data_1h.columns.get_level_values(0)
 
-    # Implement MMXM Logic
-    print(f"Calculating MMXM Strategy on {signal_ticker}...")
-    signal_data = mmxm_strategy(signal_data)
+    # Resample to 4h
+    print("Resampling data to 4h bars...")
+    signal_data_4h = resample_to_4h(signal_data_1h)
+    trade_data_4h = resample_to_4h(trade_data_1h)
+
+    # Implement MMXM Logic on 4h
+    print(f"Calculating MMXM Strategy on {signal_ticker} (4h)...")
+    signal_data_4h = mmxm_strategy(signal_data_4h)
 
     # Backtest Simulation
     print("Running backtest simulation...")
 
-    simulation_df = pd.DataFrame(index=bull_data.index)
-    simulation_df['Bull_Open'] = bull_data['Open']
-    simulation_df['Bull_Close'] = bull_data['Close']
-    simulation_df['Bear_Open'] = bear_data['Open']
-    simulation_df['Bear_Close'] = bear_data['Close']
+    simulation_df = pd.DataFrame(index=trade_data_4h.index)
+    simulation_df['Trade_Open'] = trade_data_4h['Open']
+    simulation_df['Trade_Close'] = trade_data_4h['Close']
 
     # Align signals
     combined = pd.concat([
-        signal_data[['Signal']],
+        signal_data_4h[['Signal']],
         simulation_df
     ], axis=1, join='inner')
 
-    # Filter last 10 years
-    ten_years_ago = (datetime.datetime.now() - timedelta(days=365*10)).replace(hour=0, minute=0, second=0, microsecond=0)
-    test_data = combined[combined.index >= ten_years_ago].copy()
+    # Use all available data
+    test_data = combined.copy()
 
     if len(test_data) == 0:
-        print("Error: No data for the last 10 years.")
+        print("Error: No data available for backtest.")
         return
 
     # Strategy Execution
     capital = 10000.0
     shares = 0
-    position_type = 0 # 0: Flat, 1: Long (SOXL), -1: Short (SOXS)
+    in_position = False # 0: Flat, 1: Long (SOXL)
 
     trades_log = []
     cash = capital
     equity_curve = []
 
-    # Initial Entry logic?
-    # If the first signal was Buy before the period, we might start Long?
-    # For now, let's start Flat.
+    # Assume Flat at start
 
     for i in range(len(test_data) - 1):
-        today_signal = test_data.iloc[i]['Signal'] # 1 Buy, -1 Sell
+        today_signal = test_data.iloc[i]['Signal'] # 1 Buy, -1 Sell, 0 Hold/Neutral
 
-        next_bull_open = test_data.iloc[i+1]['Bull_Open']
-        next_bear_open = test_data.iloc[i+1]['Bear_Open']
+        next_open = test_data.iloc[i+1]['Trade_Open']
         next_date = test_data.index[i+1]
 
         # Entry Logic
-        if today_signal == 1:
-            if position_type == 1:
-                pass # Already Long
-            else:
-                # Switch to Long
-                if position_type == -1:
-                    # Close Short (Sell SOXS)
-                    cash = shares * next_bear_open
-                    trades_log.append(f"Close Short (Sell SOXS): at {next_bear_open:.2f} on {next_date.date()}. Cash: {cash:.2f}")
+        if today_signal == 1 and not in_position:
+            # Buy Signal + Flat -> Buy
+            buy_price = next_open
+            shares = cash / buy_price
+            cash = 0
+            in_position = True
+            trades_log.append(f"Buy: {shares:.2f} shares at {buy_price:.2f} on {next_date}")
 
-                # Open Long (Buy SOXL)
-                buy_price = next_bull_open
-                shares = cash / buy_price
-                cash = 0
-                position_type = 1
-                trades_log.append(f"Open Long (Buy SOXL): {shares:.2f} shares at {buy_price:.2f} on {next_date.date()}")
-
-        elif today_signal == -1:
-            if position_type == -1:
-                pass # Already Short
-            else:
-                # Switch to Short
-                if position_type == 1:
-                    # Close Long (Sell SOXL)
-                    cash = shares * next_bull_open
-                    trades_log.append(f"Close Long (Sell SOXL): at {next_bull_open:.2f} on {next_date.date()}. Cash: {cash:.2f}")
-
-                # Open Short (Buy SOXS)
-                buy_price = next_bear_open
-                shares = cash / buy_price
-                cash = 0
-                position_type = -1
-                trades_log.append(f"Open Short (Buy SOXS): {shares:.2f} shares at {buy_price:.2f} on {next_date.date()}")
+        # Exit Logic
+        elif today_signal == -1 and in_position:
+            # Sell Signal + Long -> Sell (to Cash)
+            sell_price = next_open
+            cash = shares * sell_price
+            shares = 0
+            in_position = False
+            trades_log.append(f"Sell: at {sell_price:.2f} on {next_date}. Cash: {cash:.2f}")
 
         # Update Equity
-        if position_type == 1:
-            current_equity = cash + (shares * test_data.iloc[i]['Bull_Close'])
-        elif position_type == -1:
-            current_equity = cash + (shares * test_data.iloc[i]['Bear_Close'])
-        else:
-            current_equity = cash
-
+        current_equity = cash + (shares * test_data.iloc[i]['Trade_Close'])
         equity_curve.append(current_equity)
 
     # Final Value
-    if position_type == 1:
-        final_equity_strat = cash + (shares * test_data.iloc[-1]['Bull_Close'])
-    elif position_type == -1:
-        final_equity_strat = cash + (shares * test_data.iloc[-1]['Bear_Close'])
-    else:
-        final_equity_strat = cash
-
+    last_price = test_data.iloc[-1]['Trade_Close']
+    final_equity_strat = cash + (shares * last_price)
     equity_curve.append(final_equity_strat)
 
-    # Strategy 2: Buy and Hold SOXL
-    bh_buy_price = test_data.iloc[0]['Bull_Open']
+    # Strategy 2: Buy and Hold
+    bh_buy_price = test_data.iloc[0]['Trade_Open']
     bh_shares = capital / bh_buy_price
-    bh_final_value = bh_shares * test_data.iloc[-1]['Bull_Close']
+    bh_final_value = bh_shares * last_price
 
     # Output
     print("-" * 50)
-    print(f"Backtest Period: {test_data.index[0].date()} to {test_data.index[-1].date()}")
+    print(f"Backtest Period: {test_data.index[0]} to {test_data.index[-1]}")
     print("-" * 50)
-    print(f"Strategy 1: MMXM (ICT) Long/Short ({signal_ticker} -> {bull_ticker}/{bear_ticker})")
+    print(f"Strategy 1: MMXM (ICT) 4h Long Only ({signal_ticker} -> {trade_ticker})")
     print(f"Initial Capital: ${capital:,.2f}")
     print(f"Final Equity:    ${final_equity_strat:,.2f}")
     print(f"Return:          {((final_equity_strat - capital) / capital) * 100:.2f}%")
     print(f"Trades:          {len(trades_log)}")
 
     print("-" * 50)
-    print(f"Strategy 2: Buy and Hold {bull_ticker}")
+    print(f"Strategy 2: Buy and Hold {trade_ticker}")
     print(f"Initial Capital: ${capital:,.2f}")
     print(f"Final Equity:    ${bh_final_value:,.2f}")
     print(f"Return:          {((bh_final_value - capital) / capital) * 100:.2f}%")
