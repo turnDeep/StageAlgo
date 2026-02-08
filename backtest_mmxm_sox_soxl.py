@@ -195,25 +195,25 @@ def main():
     if isinstance(trade_data_1h.columns, pd.MultiIndex):
         trade_data_1h.columns = trade_data_1h.columns.get_level_values(0)
 
-    # Resample to 4h
-    print("Resampling data to 4h bars...")
-    signal_data_4h = resample_to_4h(signal_data_1h)
-    trade_data_4h = resample_to_4h(trade_data_1h)
+    # Use 1h data directly
+    # print("Resampling data to 4h bars...")
+    # signal_data_4h = resample_to_4h(signal_data_1h)
+    # trade_data_4h = resample_to_4h(trade_data_1h)
 
-    # Implement MMXM Logic on 4h
-    print(f"Calculating MMXM Strategy on {signal_ticker} (4h)...")
-    signal_data_4h = mmxm_strategy(signal_data_4h)
+    # Implement MMXM Logic on 1h
+    print(f"Calculating MMXM Strategy on {signal_ticker} (1h)...")
+    signal_data_1h = mmxm_strategy(signal_data_1h)
 
     # Backtest Simulation
     print("Running backtest simulation...")
 
-    simulation_df = pd.DataFrame(index=trade_data_4h.index)
-    simulation_df['Trade_Open'] = trade_data_4h['Open']
-    simulation_df['Trade_Close'] = trade_data_4h['Close']
+    simulation_df = pd.DataFrame(index=trade_data_1h.index)
+    simulation_df['Trade_Open'] = trade_data_1h['Open']
+    simulation_df['Trade_Close'] = trade_data_1h['Close']
 
     # Align signals
     combined = pd.concat([
-        signal_data_4h[['Signal']],
+        signal_data_1h[['Signal']],
         simulation_df
     ], axis=1, join='inner')
 
@@ -277,7 +277,7 @@ def main():
     print("-" * 50)
     print(f"Backtest Period: {test_data.index[0]} to {test_data.index[-1]}")
     print("-" * 50)
-    print(f"Strategy 1: MMXM (ICT) 4h Long Only ({signal_ticker} -> {trade_ticker})")
+    print(f"Strategy 1: MMXM (ICT) 1h Long Only ({signal_ticker} -> {trade_ticker})")
     print(f"Initial Capital: ${capital:,.2f}")
     print(f"Final Equity:    ${final_equity_strat:,.2f}")
     print(f"Return:          {((final_equity_strat - capital) / capital) * 100:.2f}%")
