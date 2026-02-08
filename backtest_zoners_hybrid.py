@@ -6,64 +6,49 @@ from datetime import timedelta
 import pandas_ta as ta
 
 # --- ZoneRS Logic ---
-def calculate_zoners(df, benchmark_df, rs_length=50, mom_length=20, vol_lookback=50):
-    # Align Data
-    # Assuming daily data, index match
-    df_aligned = df.copy()
-    bench_aligned = benchmark_df.copy()
+def calculate_zoners_weekly(df_daily, benchmark_daily, rs_length=50, mom_length=20, vol_lookback=50):
+    """
+    Calculates ZoneRS based on WEEKLY data, then forward fills to daily.
+    """
+    # Resample to Weekly
+    logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
 
-    # Ensure timezone naive
-    if df_aligned.index.tz is not None: df_aligned.index = df_aligned.index.tz_localize(None)
-    if bench_aligned.index.tz is not None: bench_aligned.index = bench_aligned.index.tz_localize(None)
+    df_w = df_daily.resample('W-FRI').agg(logic).dropna()
+    bench_w = benchmark_daily.resample('W-FRI').agg(logic).dropna()
 
-    # Common index
-    common_idx = df_aligned.index.intersection(bench_aligned.index)
-    df_aligned = df_aligned.loc[common_idx]
-    bench_aligned = bench_aligned.loc[common_idx]
+    # Align Weekly
+    common_idx = df_w.index.intersection(bench_w.index)
+    df_w = df_w.loc[common_idx]
+    bench_w = bench_w.loc[common_idx]
 
-    # RS Calc
-    rs = df_aligned['Close'] / bench_aligned['Close']
+    # RS Calc (Weekly)
+    rs = df_w['Close'] / bench_w['Close']
     rs_sma = rs.rolling(window=rs_length).mean()
     rs_ratio = rs / rs_sma
 
-    # Momentum (ROC of RS Ratio)
-    # ta.roc(source, length) = ((source - source[length]) / source[length]) * 100
+    # Momentum (Weekly ROC)
     rs_momentum = (rs_ratio.diff(mom_length) / rs_ratio.shift(mom_length)) * 100
 
-    # Volume Filter
-    # "volumeBoost = volume > avgVolume"
-    # "quadrant := (newQuadrant == 'Power' and (not volumeAvailable or volumeBoost)) ? 'Power' : ..."
-    # This implies if Volume is NOT boosted, we downgrade Power?
-    # The script says: (newQuadrant != "Power") ? newQuadrant : quadrant
-    # Meaning if it *would* be Power but fails volume check, it stays as previous quadrant?
-    # Or simplified: Power requires RS>=1, Mom>=0 AND Vol>AvgVol.
-    # If RS>=1, Mom>=0 but Vol<=AvgVol -> It's theoretically "Power" zone coordinates, but not confirmed.
-    # The script logic:
-    # newQuad = ...
-    # quadrant := (newQuad == Power and Boost) ? Power : (newQuad != Power) ? newQuad : quadrant
-    # So if New=Power but NoBoost -> Keep Previous Quadrant.
+    # Volume Filter (Weekly)
+    avg_vol = df_w['Volume'].rolling(window=vol_lookback).mean()
+    vol_boost = df_w['Volume'] > avg_vol
 
-    avg_vol = df_aligned['Volume'].rolling(window=vol_lookback).mean()
-    vol_boost = df_aligned['Volume'] > avg_vol
-
-    # Determine 'NewQuadrant'
+    # Determine Quadrant
     cond_power = (rs_ratio >= 1) & (rs_momentum >= 0)
     cond_drift = (rs_ratio >= 1) & (rs_momentum < 0)
     cond_dead  = (rs_ratio < 1)  & (rs_momentum < 0)
     cond_lift  = (rs_ratio < 1)  & (rs_momentum >= 0)
 
-    # State Machine for Quadrant
     quadrants = []
     prev_quad = "Neutral"
 
-    # To speed up, convert to numpy
     c_power = cond_power.values
     c_drift = cond_drift.values
     c_dead  = cond_dead.values
     c_lift  = cond_lift.values
     v_boost = vol_boost.values
 
-    for i in range(len(df_aligned)):
+    for i in range(len(df_w)):
         new_q = "Neutral"
         if c_power[i]: new_q = "Power"
         elif c_drift[i]: new_q = "Drift"
@@ -75,15 +60,37 @@ def calculate_zoners(df, benchmark_df, rs_length=50, mom_length=20, vol_lookback
             if v_boost[i]:
                 final_q = "Power"
             else:
-                final_q = prev_quad # Sustain previous if no volume confirmation
+                final_q = prev_quad
         else:
             final_q = new_q
 
         quadrants.append(final_q)
         prev_quad = final_q
 
-    df_aligned['Zone'] = quadrants
-    return df_aligned
+    df_w['Zone'] = quadrants
+
+    # Merge back to Daily
+    # Reindex df_daily to match weekly zones (forward fill)
+    df_daily_zones = df_daily.copy()
+
+    # Create a Series indexed by weekly dates, then reindex to daily
+    zone_series = df_w['Zone']
+
+    # Reindex to daily, ffill
+    # Note: Weekly date is Friday. Daily dates Mon-Fri should get the value of the *previous* Friday?
+    # Or the *current* week's incomplete value?
+    # Standard Backtest: You only know the weekly close on Friday Close.
+    # So Monday-Friday of Week T should use the Zone determined at Week T-1 Friday.
+    # Shift Weekly zones by 1 week forward to avoid lookahead?
+    # Yes, we use *closed* weekly bars to determine the state for the *next* week.
+
+    zone_series = zone_series.shift(1) # Shift 1 week
+
+    # Resample to daily (ffill)
+    zone_daily = zone_series.reindex(df_daily.index, method='ffill')
+    df_daily_zones['Zone'] = zone_daily.fillna("Neutral")
+
+    return df_daily_zones
 
 # --- Strategies (Reused) ---
 
@@ -189,8 +196,8 @@ def run_hybrid_backtest(ticker, benchmark="^GSPC"):
     if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
     if isinstance(bench.columns, pd.MultiIndex): bench.columns = bench.columns.get_level_values(0)
 
-    # Calculate ZoneRS
-    df = calculate_zoners(data, bench)
+    # Calculate ZoneRS (Weekly Logic)
+    df = calculate_zoners_weekly(data, bench)
 
     # Calculate Sub-Strategies
     df['Sig_PMax'] = strat_pmax_supertrend(df)
