@@ -144,7 +144,24 @@ def run_backtest():
 
     breadth_df['Is_Climax'] = breadth_df['New_Lows_Ratio'] >= CLIMAX_THRESHOLD_DAILY
     breadth_df['Is_Bloodbath'] = breadth_df['New_Lows_Ratio'] >= BLOODBATH_THRESHOLD_DAILY
-    breadth_df['Climax_Entry'] = breadth_df['Is_Climax'].shift(ENTRY_LAG_DAYS).fillna(False)
+
+    # --- NEW RESET LOGIC ---
+    # Create an integer index for calculation
+    breadth_df['row_idx'] = np.arange(len(breadth_df))
+
+    # Mark rows where Climax occurred
+    breadth_df['climax_idx_marker'] = np.where(breadth_df['Is_Climax'], breadth_df['row_idx'], np.nan)
+
+    # Forward fill to get the 'latest' climax index for every row
+    breadth_df['last_climax_idx'] = breadth_df['climax_idx_marker'].ffill()
+
+    # Calculate gap
+    breadth_df['days_since_climax'] = breadth_df['row_idx'] - breadth_df['last_climax_idx']
+
+    # Trigger ONLY if exactly 22 days have passed since the LAST climax
+    # This automatically handles the "Reset" rule (if a new climax happens, days_since resets to 0)
+    breadth_df['Climax_Entry'] = (breadth_df['days_since_climax'] == ENTRY_LAG_DAYS)
+    # -----------------------
 
     # 3. SuperTrend Logic (Weekly)
     sox_w = resample_to_weekly(sox)
@@ -231,7 +248,7 @@ def run_backtest():
     bh_ret = (bh.iloc[-1] - 1) * 100
 
     print("\n" + "="*50)
-    print(f"BACKTEST: Daily Climax + Weekly Kivanc SuperTrend")
+    print(f"BACKTEST: Daily Climax (With Reset) + Weekly SuperTrend")
     print(f"Period: {results.index[0].date()} to {results.index[-1].date()}")
     print("="*50)
     print(f"Strategy: {strat_ret:.2f}%")
@@ -239,7 +256,6 @@ def run_backtest():
     print("="*50)
 
     # 7. Chart
-    # Plotting Equity
     fig, axes = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
 
     # Ax0: Equity
