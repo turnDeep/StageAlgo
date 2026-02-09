@@ -14,16 +14,18 @@ SOX_TICKER = '^SOX'
 SOXL_TICKER = 'SOXL'
 PMAX_LENGTH = 10
 PMAX_MULTIPLIER = 3
-CLIMAX_THRESHOLD_WEEKLY = 13.0 # Optimized to catch 2016-01-04
-BLOODBATH_THRESHOLD_WEEKLY = 4.0 # Should I adjust this? User asked to adjust Climax. Bloodbath usually 4%.
-# If Weekly Climax is 13%, Daily Bloodbath (4%) is much lower.
-# Weekly New Lows Aggregation (Max) means if ANY day > 4%, it's Bloodbath?
-# Let's keep 4% for Bloodbath (defensive) as it's standard.
-ENTRY_LAG_WEEKS = 4 # Approx 22 trading days
+
+# DAILY LOGIC PARAMETERS
+CLIMAX_THRESHOLD_DAILY = 20.0
+BLOODBATH_THRESHOLD_DAILY = 4.0
+ENTRY_LAG_DAYS = 22
+
+# Backtest Start Date
+START_DATE_STR = '2016-07-22'
 
 def load_breadth_data():
     if not os.path.exists(BREADTH_FILE):
-        print(f"Error: {BREADTH_FILE} not found. Run market_breadth_generator.py first.")
+        print(f"Error: {BREADTH_FILE} not found.")
         return None
 
     df = pd.read_csv(BREADTH_FILE)
@@ -39,9 +41,10 @@ def load_breadth_data():
     df.sort_index(inplace=True)
     return df
 
-def resample_to_weekly(df, method='last'):
+def resample_to_weekly(df):
     """
-    Resamples daily data to weekly bars (Monday start).
+    Resamples daily data to weekly bars (Friday Close).
+    Used for PMax calculation.
     """
     logic = {
         'Open': 'first',
@@ -51,9 +54,7 @@ def resample_to_weekly(df, method='last'):
         'Volume': 'sum'
     }
     logic = {k: v for k, v in logic.items() if k in df.columns}
-
-    # Resample W-MON, label='left' puts the date at the start of the week (Monday)
-    df_w = df.resample('W-MON', closed='left', label='left').agg(logic).dropna()
+    df_w = df.resample('W-FRI').agg(logic).dropna()
     return df_w
 
 def calculate_pmax(df, length=10, multiplier=3):
@@ -62,22 +63,35 @@ def calculate_pmax(df, length=10, multiplier=3):
         return pd.Series(0, index=df.index), pd.Series(0, index=df.index)
 
     col_dir = [c for c in st.columns if c.startswith("SUPERTd")][0]
-    col_val = [c for c in st.columns if c.startswith("SUPERT_")][0]
-
-    return st[col_dir], st[col_val]
+    return st[col_dir], st[col_dir] # Return Dir twice as val not needed for logic
 
 def run_backtest():
-    # 1. Load Data
+    # 1. Load Breadth (Daily)
     print("Loading Market Breadth Data...")
     breadth_df = load_breadth_data()
     if breadth_df is None: return
 
-    print("Fetching ^SOX and SOXL Data...")
-    start_date = breadth_df.index[0]
-    end_date = breadth_df.index[-1]
+    # Filter Start Date
+    start_dt = pd.to_datetime(START_DATE_STR)
 
-    sox = yf.download(SOX_TICKER, start=start_date, end=end_date, progress=False)
-    soxl = yf.download(SOXL_TICKER, start=start_date, end=end_date, progress=False)
+    # 2. Process Daily Breadth Signals
+    if 'New_Lows_Ratio' not in breadth_df.columns:
+        breadth_df['New_Lows_Ratio'] = (breadth_df['New_Lows'] / breadth_df['Total_Issues']) * 100
+
+    # Signals
+    breadth_df['Is_Climax'] = breadth_df['New_Lows_Ratio'] >= CLIMAX_THRESHOLD_DAILY
+    breadth_df['Is_Bloodbath'] = breadth_df['New_Lows_Ratio'] >= BLOODBATH_THRESHOLD_DAILY
+
+    # Entry Signal (22 Days Lag)
+    breadth_df['Climax_Entry'] = breadth_df['Is_Climax'].shift(ENTRY_LAG_DAYS).fillna(False)
+
+    # 3. Load Price Data
+    print("Fetching ^SOX and SOXL Data...")
+    # Fetch ample history to cover start date logic
+    fetch_start = start_dt - timedelta(days=365)
+
+    sox = yf.download(SOX_TICKER, start=fetch_start, progress=False)
+    soxl = yf.download(SOXL_TICKER, start=fetch_start, progress=False)
 
     if isinstance(sox.columns, pd.MultiIndex): sox.columns = sox.columns.get_level_values(0)
     if isinstance(soxl.columns, pd.MultiIndex): soxl.columns = soxl.columns.get_level_values(0)
@@ -86,74 +100,77 @@ def run_backtest():
     if soxl.index.tz is not None: soxl.index = soxl.index.tz_localize(None)
     if breadth_df.index.tz is not None: breadth_df.index = breadth_df.index.tz_localize(None)
 
-    # 2. Resample Everything to Weekly (Monday)
-    # Breadth Logic: 'New_Lows_Ratio': 'max' (If any day in week was Climax, week is Climax)
-    if 'New_Lows_Ratio' not in breadth_df.columns:
-        breadth_df['New_Lows_Ratio'] = (breadth_df['New_Lows'] / breadth_df['Total_Issues']) * 100
+    # 4. Integrate Weekly PMax with Daily Signals
+    # We run the simulation on DAILY bars to capture the exact entry day.
+    # But we check PMax status from Weekly bars.
 
-    breadth_w = breadth_df.resample('W-MON', closed='left', label='left').agg({
-        'New_Lows_Ratio': 'max'
-    })
-
+    # Calculate Weekly PMax
     sox_w = resample_to_weekly(sox)
-    soxl_w = resample_to_weekly(soxl)
+    pmax_dir_w, _ = calculate_pmax(sox_w)
+    sox_w['PMax_Dir'] = pmax_dir_w
 
-    # 3. Calculate Indicators (Weekly)
+    # Resample PMax back to Daily (Forward Fill)
+    # This simulates "Weekly state persists through the next week"
+    pmax_daily = sox_w['PMax_Dir'].resample('D').ffill()
 
-    # PMax
-    pmax_dir, pmax_val = calculate_pmax(sox_w)
-    sox_w['PMax_Dir'] = pmax_dir
+    # Merge everything into a Daily Simulation DF
+    df = pd.DataFrame(index=soxl.index)
+    df = df.join(soxl[['Open', 'Close']], how='inner')
+    df = df.join(breadth_df[['New_Lows_Ratio', 'Climax_Entry', 'Is_Bloodbath']], how='left')
+    df = df.join(pmax_daily.rename('PMax_Dir'), how='left')
 
-    # Breadth Signals
-    breadth_w['Is_Climax'] = breadth_w['New_Lows_Ratio'] >= CLIMAX_THRESHOLD_WEEKLY
-    breadth_w['Is_Bloodbath'] = breadth_w['New_Lows_Ratio'] >= BLOODBATH_THRESHOLD_WEEKLY
+    # Filter by requested Start Date
+    df = df[df.index >= start_dt].copy()
+    df.ffill(inplace=True) # Fill gaps if any
+    df.dropna(inplace=True) # Drop initial NaNs if PMax not ready
 
-    # Entry Signal (Shift 4 Weeks)
-    breadth_w['Climax_Entry'] = breadth_w['Is_Climax'].shift(ENTRY_LAG_WEEKS).fillna(False)
-
-    # Merge
-    # Use sox_w index as base
-    df = pd.concat([sox_w, breadth_w], axis=1).dropna()
-
-    # Align SOXL
-    # We need SOXL Open/Close for trading
-    # Assuming soxl_w index aligns (Mon-Mon)
-    # Join
-    df = df.join(soxl_w[['Open', 'Close']], rsuffix='_SOXL')
-    df.rename(columns={'Open_SOXL': 'SOXL_Open', 'Close_SOXL': 'SOXL_Close'}, inplace=True)
-    df.dropna(inplace=True)
-
-    # 4. Simulation
-
+    # 5. Simulation Loop
     pos = 0
     equity = 1.0
     equity_curve = [1.0]
     log_data = []
 
+    # Initial PMax State might be NaN if start date is too early?
+    # We filtered, so should be fine.
+
+    # Logic:
+    # 1. Climax Entry (True) -> Force Buy.
+    # 2. Bloodbath (True) -> Sell/Cash.
+    # 3. PMax (1) -> Buy.
+    # 4. PMax (-1) -> Sell.
+    # Priority: Climax Entry > Bloodbath > PMax.
+
     for i in range(1, len(df)):
         date = df.index[i]
-        price_soxl = df['SOXL_Close'].iloc[i]
-        prev_price_soxl = df['SOXL_Close'].iloc[i-1]
+        price = df['Close'].iloc[i]
+        prev_price = df['Close'].iloc[i-1]
 
-        pmax_dir = df['PMax_Dir'].iloc[i]
         climax_entry = df['Climax_Entry'].iloc[i]
         is_bloodbath = df['Is_Bloodbath'].iloc[i]
+        pmax_dir = df['PMax_Dir'].iloc[i]
 
-        # Signal Logic
+        # Signal
         signal = 0
 
+        # Note: If Climax Entry happens ON a Bloodbath day?
+        # Entry logic usually assumes "panic is over" (22 days later).
+        # If 22 days later is ALSO a Bloodbath day (New lows > 4%), it's a double bottom or crash continuation.
+        # Strict Vince rule: "Sidestep if > 4%".
+        # But "Re-entry rule" is "22 days after > 20%".
+        # We assume Re-entry overrides because it's a specific setup.
+
         if climax_entry:
-            signal = 1 # Force Buy
+            signal = 1
         elif is_bloodbath:
-            signal = 0 # Step Aside
+            signal = 0
         elif pmax_dir == 1:
             signal = 1
         else:
             signal = 0
 
-        # Execute (from prev close to this close)
+        # Execute
         prev_pos = 0 if i==1 else log_data[-1]['Position']
-        ret = (price_soxl - prev_price_soxl) / prev_price_soxl
+        ret = (price - prev_price) / prev_price
 
         if prev_pos == 1:
             equity *= (1 + ret)
@@ -162,41 +179,41 @@ def run_backtest():
 
         log_data.append({
             'Date': date,
-            'Price': price_soxl,
+            'Price': price,
             'Position': signal,
-            'Equity': equity,
-            'Climax': climax_entry,
-            'Bloodbath': is_bloodbath
+            'Equity': equity
         })
 
+    # Results
     results_df = pd.DataFrame(log_data)
+    if results_df.empty:
+        print("No data in range.")
+        return
+
     results_df.set_index('Date', inplace=True)
 
     # Buy & Hold
-    soxl_bh = (df['SOXL_Close'] / df['SOXL_Close'].iloc[0])
+    bh_equity = (df['Close'] / df['Close'].iloc[0]).iloc[1:]
 
-    # Reporting
-    total_ret_strat = (results_df['Equity'].iloc[-1] - 1) * 100
-    total_ret_bh = (soxl_bh.iloc[-1] - 1) * 100
+    total_ret = (results_df['Equity'].iloc[-1] - 1) * 100
+    bh_ret = (bh_equity.iloc[-1] - 1) * 100
 
     print("\n" + "="*50)
-    print(f"BACKTEST RESULTS (Weekly PMax + Weekly Climax)")
-    print(f"Period: {df.index[0].date()} to {df.index[-1].date()}")
+    print(f"BACKTEST: Daily Logic (Start: {START_DATE_STR})")
     print("="*50)
-    print(f"Strategy Return: {total_ret_strat:.2f}%")
-    print(f"Buy & Hold     : {total_ret_bh:.2f}%")
+    print(f"Strategy Return: {total_ret:.2f}%")
+    print(f"Buy & Hold     : {bh_ret:.2f}%")
     print("="*50)
-    print(f"Climax Threshold (Weekly Max): {CLIMAX_THRESHOLD_WEEKLY}%")
 
-    # Plotting
-    plt.figure(figsize=(14, 8))
+    # Plot
+    plt.figure(figsize=(12,6))
     plt.plot(results_df.index, results_df['Equity'], label='Strategy')
-    plt.plot(soxl_bh.index, soxl_bh, label='Buy & Hold', alpha=0.5)
+    plt.plot(results_df.index, bh_equity, label='Buy & Hold', alpha=0.5)
+    plt.title(f'Daily Climax + Weekly PMax ({START_DATE_STR} - Present)')
     plt.yscale('log')
-    plt.title('Weekly Strategy vs Buy & Hold')
     plt.legend()
     plt.grid(True)
-    plt.savefig('pmax_vince_williams_weekly_result.png')
+    plt.savefig('pmax_daily_2016.png')
 
 if __name__ == "__main__":
     run_backtest()
