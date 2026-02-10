@@ -1,0 +1,11 @@
+Loading Breadth Data...
+Fetching Price Data...
+
+==================================================
+BACKTEST: Daily Climax (With Reset) + Weekly SuperTrend
+Period: 2016-07-25 to 2026-02-06
+==================================================
+Strategy: 10025.09%
+Buy & Hold: 2877.05%
+==================================================
+Chart saved.
