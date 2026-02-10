@@ -1,0 +1,11 @@
+Loading Market Breadth Data...
+Fetching ^SOX and SOXL Data...
+
+==================================================
+BACKTEST RESULTS (Weekly PMax + Weekly Climax)
+Period: 2011-04-18 to 2026-02-02
+==================================================
+Strategy Return: 7877.67%
+Buy & Hold     : 5867.19%
+==================================================
+Climax Threshold (Weekly Max): 13.0%

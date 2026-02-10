@@ -143,3 +143,10 @@ data/
 *.png
 !algo_lines_chart.png
 !*_zigzag.png
+
+!pmax_*.png
+!utbot_*.png
+!pmax_vince_williams_result.png
+!pmax_vince_williams_weekly_result.png
+!pmax_daily_2016.png
+!pmax_vince_williams_result.png
