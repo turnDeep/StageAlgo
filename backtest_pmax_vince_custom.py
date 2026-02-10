@@ -142,16 +142,15 @@ def run_backtest():
     if 'New_Lows_Ratio' not in breadth_df.columns:
         breadth_df['New_Lows_Ratio'] = (breadth_df['New_Lows'] / breadth_df['Total_Issues']) * 100
 
-    # --- HYBRID LOGIC START ---
-    # Climax (Buy Trigger): Uses Raw Data (>20%)
+    # --- REVERTED TO RAW LOGIC ---
+    # Climax (Buy Trigger): Raw Data (>20%)
     breadth_df['Is_Climax'] = breadth_df['New_Lows_Ratio'] >= CLIMAX_THRESHOLD_DAILY
 
-    # Bloodbath (Safety): Uses SMA 10 (>4%)
-    breadth_df['New_Lows_SMA10'] = breadth_df['New_Lows_Ratio'].rolling(window=10).mean()
-    breadth_df['Is_Bloodbath'] = breadth_df['New_Lows_SMA10'] >= BLOODBATH_THRESHOLD_DAILY
+    # Bloodbath (Safety): Raw Data (>4%) -- REVERTED FROM SMA10
+    breadth_df['Is_Bloodbath'] = breadth_df['New_Lows_Ratio'] >= BLOODBATH_THRESHOLD_DAILY
     # --------------------------
 
-    # --- RESET LOGIC ---
+    # --- RESET LOGIC (Kept as requested implicitly by reverting to "Previous High Score" version which had reset) ---
     breadth_df['row_idx'] = np.arange(len(breadth_df))
     breadth_df['climax_idx_marker'] = np.where(breadth_df['Is_Climax'], breadth_df['row_idx'], np.nan)
     breadth_df['last_climax_idx'] = breadth_df['climax_idx_marker'].ffill()
@@ -171,7 +170,7 @@ def run_backtest():
     # 4. Simulation Setup
     df = pd.DataFrame(index=soxl.index)
     df = df.join(soxl[['Open', 'Close']], how='inner')
-    df = df.join(breadth_df[['New_Lows_Ratio', 'New_Lows_SMA10', 'Climax_Entry', 'Is_Bloodbath']], how='left')
+    df = df.join(breadth_df[['New_Lows_Ratio', 'Climax_Entry', 'Is_Bloodbath']], how='left')
     df = df.join(st_daily.rename('ST_Dir'), how='left')
 
     # Filter Start
@@ -244,7 +243,7 @@ def run_backtest():
     bh_ret = (bh.iloc[-1] - 1) * 100
 
     print("\n" + "="*50)
-    print(f"BACKTEST: Hybrid Logic (Raw Climax, SMA Bloodbath)")
+    print(f"BACKTEST: Reverted to Raw Bloodbath Logic")
     print(f"Period: {results.index[0].date()} to {results.index[-1].date()}")
     print("="*50)
     print(f"Strategy: {strat_ret:.2f}%")
@@ -266,18 +265,16 @@ def run_backtest():
     axes[1].plot(df.index[1:], df['Close'][1:], color='black', label='Price')
     climax_dates = results[results['Climax']].index
     axes[1].scatter(climax_dates, df.loc[climax_dates]['Close'], color='purple', marker='^', s=100, label='Climax Buy', zorder=5)
-    axes[1].fill_between(results.index, df['Close'].min(), df['Close'].max(), where=results['Bloodbath'], color='red', alpha=0.3, label='Bloodbath (SMA>4%)')
+    axes[1].fill_between(results.index, df['Close'].min(), df['Close'].max(), where=results['Bloodbath'], color='red', alpha=0.3, label='Raw Bloodbath (>4%)')
     axes[1].set_title('Price & Signals')
     axes[1].legend()
     axes[1].grid(True)
 
     # Ax2: Breadth
-    axes[2].plot(df.index[1:], df['New_Lows_Ratio'][1:], color='blue', alpha=0.3, label='Raw New Lows %')
-    axes[2].plot(df.index[1:], df['New_Lows_SMA10'][1:], color='purple', linewidth=2, label='SMA10 New Lows %')
+    axes[2].plot(df.index[1:], df['New_Lows_Ratio'][1:], color='blue', label='New Lows %')
     axes[2].axhline(20, color='red', linestyle='--')
     axes[2].axhline(4, color='orange', linestyle='--')
-    axes[2].set_title('Market Breadth')
-    axes[2].legend()
+    axes[2].set_title('Market Breadth (Raw)')
     axes[2].grid(True)
 
     plt.tight_layout()
