@@ -142,21 +142,16 @@ def run_backtest():
     if 'New_Lows_Ratio' not in breadth_df.columns:
         breadth_df['New_Lows_Ratio'] = (breadth_df['New_Lows'] / breadth_df['Total_Issues']) * 100
 
-    # --- REVERTED TO RAW LOGIC ---
-    # Climax (Buy Trigger): Raw Data (>20%)
     breadth_df['Is_Climax'] = breadth_df['New_Lows_Ratio'] >= CLIMAX_THRESHOLD_DAILY
 
-    # Bloodbath (Safety): Raw Data (>4%) -- REVERTED FROM SMA10
+    # RAW BLOOD BATH (Reverted)
     breadth_df['Is_Bloodbath'] = breadth_df['New_Lows_Ratio'] >= BLOODBATH_THRESHOLD_DAILY
-    # --------------------------
 
-    # --- RESET LOGIC (Kept as requested implicitly by reverting to "Previous High Score" version which had reset) ---
-    breadth_df['row_idx'] = np.arange(len(breadth_df))
-    breadth_df['climax_idx_marker'] = np.where(breadth_df['Is_Climax'], breadth_df['row_idx'], np.nan)
-    breadth_df['last_climax_idx'] = breadth_df['climax_idx_marker'].ffill()
-    breadth_df['days_since_climax'] = breadth_df['row_idx'] - breadth_df['last_climax_idx']
-    breadth_df['Climax_Entry'] = (breadth_df['days_since_climax'] == ENTRY_LAG_DAYS)
-    # -----------------------
+    # --- NO RESET LOGIC (Reverted) ---
+    # Shift logic: True at T -> True at T+22
+    # If Climax happens at T and T+5, we get True at T+22 and T+27.
+    breadth_df['Climax_Entry'] = breadth_df['Is_Climax'].shift(ENTRY_LAG_DAYS).fillna(False)
+    # ---------------------------------
 
     # 3. SuperTrend Logic (Weekly)
     sox_w = resample_to_weekly(sox)
@@ -191,7 +186,7 @@ def run_backtest():
         price = df['Close'].iloc[i]
         prev_price = df['Close'].iloc[i-1]
 
-        # Return (Close to Close)
+        # Return
         ret = (price - prev_price) / prev_price
         if pos == 1:
             equity *= (1 + ret)
@@ -206,7 +201,7 @@ def run_backtest():
         next_pos = pos
 
         if bloodbath:
-            next_pos = 0 # Safety first (Exit at Close of Today)
+            next_pos = 0 # Safety first
         elif pos == 0:
             if climax:
                 next_pos = 1 # Catch Bottom
@@ -243,7 +238,7 @@ def run_backtest():
     bh_ret = (bh.iloc[-1] - 1) * 100
 
     print("\n" + "="*50)
-    print(f"BACKTEST: Reverted to Raw Bloodbath Logic")
+    print(f"BACKTEST: Daily Climax (No Reset) + Weekly SuperTrend")
     print(f"Period: {results.index[0].date()} to {results.index[-1].date()}")
     print("="*50)
     print(f"Strategy: {strat_ret:.2f}%")
@@ -265,7 +260,7 @@ def run_backtest():
     axes[1].plot(df.index[1:], df['Close'][1:], color='black', label='Price')
     climax_dates = results[results['Climax']].index
     axes[1].scatter(climax_dates, df.loc[climax_dates]['Close'], color='purple', marker='^', s=100, label='Climax Buy', zorder=5)
-    axes[1].fill_between(results.index, df['Close'].min(), df['Close'].max(), where=results['Bloodbath'], color='red', alpha=0.3, label='Raw Bloodbath (>4%)')
+    axes[1].fill_between(results.index, df['Close'].min(), df['Close'].max(), where=results['Bloodbath'], color='red', alpha=0.3, label='Bloodbath')
     axes[1].set_title('Price & Signals')
     axes[1].legend()
     axes[1].grid(True)
@@ -274,7 +269,7 @@ def run_backtest():
     axes[2].plot(df.index[1:], df['New_Lows_Ratio'][1:], color='blue', label='New Lows %')
     axes[2].axhline(20, color='red', linestyle='--')
     axes[2].axhline(4, color='orange', linestyle='--')
-    axes[2].set_title('Market Breadth (Raw)')
+    axes[2].set_title('Market Breadth')
     axes[2].grid(True)
 
     plt.tight_layout()
