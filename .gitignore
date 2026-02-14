@@ -143,3 +143,6 @@ data/
 *.png
 !algo_lines_chart.png
 !*_zigzag.png
+!pmax_*.png
+!utbot_*.png
+!charts/*.png
