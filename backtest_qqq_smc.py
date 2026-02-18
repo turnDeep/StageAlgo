@@ -16,7 +16,6 @@ def main():
     def flatten_columns(df):
         if isinstance(df.columns, pd.MultiIndex):
             # If 'Close' is in the levels, drop the Ticker level
-            # yfinance often returns (Price, Ticker)
             if 'Close' in df.columns.get_level_values(0):
                  df.columns = df.columns.get_level_values(0)
             elif 'Close' in df.columns.get_level_values(1):
