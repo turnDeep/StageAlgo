@@ -1,0 +1,98 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © planetes0925
+
+//@version=6
+indicator("Ultimate MTF Portfolio (SOXL/GDXU)", overlay=false)
+
+// =========================================================================
+// 1. INPUTS
+// =========================================================================
+grp_tech = "Tech Signal (SOX)"
+i_tech_sym = input.symbol("NASDAQ:SOX", title="Tech Index Symbol", group=grp_tech)
+i_tech_w_len = input.int(5, title="Tech Weekly ATR Length", group=grp_tech)
+i_tech_w_mult = input.float(1.5, title="Tech Weekly ATR Mult", group=grp_tech, step=0.1)
+i_tech_d_len = input.int(14, title="Tech Daily ATR Length", group=grp_tech)
+i_tech_d_mult = input.float(4.0, title="Tech Daily ATR Mult", group=grp_tech, step=0.1)
+
+grp_gold = "Gold Signal (GLD)"
+i_gold_sym = input.symbol("AMEX:GLD", title="Gold ETF Symbol", group=grp_gold)
+i_gold_w_len = input.int(14, title="Gold Weekly ATR Length", group=grp_gold)
+i_gold_w_mult = input.float(2.0, title="Gold Weekly ATR Mult", group=grp_gold, step=0.1)
+i_gold_d_len = input.int(5, title="Gold Daily ATR Length", group=grp_gold)
+i_gold_d_mult = input.float(1.5, title="Gold Daily ATR Mult", group=grp_gold, step=0.1)
+
+// =========================================================================
+// 2. CUSTOM ATR TRAILING STOP FUNCTION (Strict RMA)
+// =========================================================================
+f_atr_ts(h, l, c, len, mult) =>
+    true_range = math.max(h - l, math.max(math.abs(h - nz(c[1], c)), math.abs(l - nz(c[1], c))))
+    atr = ta.rma(true_range, len) // Wilder's Smoothing
+    offset = atr * mult
+
+    // 【修正点】: var を使用せず、自己参照 (ts[1]) を使って状態を保持する
+    float ts = na
+    prev_ts = nz(ts[1], c - offset)
+
+    if c > prev_ts and nz(c[1], c) > prev_ts
+        ts := math.max(prev_ts, c - offset)
+    else if c < prev_ts and nz(c[1], c) < prev_ts
+        ts := math.min(prev_ts, c + offset)
+    else
+        if c > prev_ts
+            ts := c - offset
+        else
+            ts := c + offset
+    ts
+
+// =========================================================================
+// 3. MULTI-TIMEFRAME DATA FETCHING
+// =========================================================================
+// Function to determine if currently bullish on a given timeframe
+f_is_bullish(len, mult) =>
+    ts = f_atr_ts(high, low, close, len, mult)
+    close > ts
+
+// Calculate Daily states natively
+tech_d_bull = request.security(i_tech_sym, "D", f_is_bullish(i_tech_d_len, i_tech_d_mult),  lookahead=barmerge.lookahead_on)
+gold_d_bull = request.security(i_gold_sym, "D", f_is_bullish(i_gold_d_len, i_gold_d_mult),  lookahead=barmerge.lookahead_on)
+
+// Fetch finalized Weekly states (using [1] inside the security call to ensure the week is closed)
+tech_w_bull = request.security(i_tech_sym, "W", f_is_bullish(i_tech_w_len, i_tech_w_mult)[1], lookahead=barmerge.lookahead_on)
+gold_w_bull = request.security(i_gold_sym, "W", f_is_bullish(i_gold_w_len, i_gold_w_mult)[1], lookahead=barmerge.lookahead_on)
+
+// =========================================================================
+// 4. PORTFOLIO LOGIC & CONFLICT RESOLUTION
+// =========================================================================
+bull_tech = tech_d_bull and tech_w_bull
+bull_gold = gold_d_bull and gold_w_bull
+
+// State Machine: 0 = 100% Cash, 1 = 100% SOXL, 2 = 100% GDXU
+// 【修正点】: 毎バー評価・上書きされる変数なので var を外す
+int state = 0
+
+if bull_gold
+    state := 2
+else if bull_tech
+    state := 1
+else
+    state := 0
+
+// Detect State Changes
+// 【修正点】: 前のバーでの最終的な state を参照する
+state_changed = state != nz(state[1], 0)
+
+// =========================================================================
+// 5. VISUALIZATION & ALERTS
+// =========================================================================
+color bg_color = state == 2 ? color.new(color.yellow, 80) : state == 1 ? color.new(color.blue, 80) : color.new(color.red, 80)
+bgcolor(bg_color, title="Portfolio Allocation Background")
+
+plot(state, title="Portfolio State (0=Cash, 1=SOXL, 2=GDXU)", color=color.white, style=plot.style_stepline, linewidth=2)
+
+if state_changed
+    if state == 2
+        alert("ACTION REQUIRED: Buy/Hold 100% GDXU. (Gold MTF Bullish)", alert.freq_once_per_bar_close)
+    else if state == 1
+        alert("ACTION REQUIRED: Buy/Hold 100% SOXL. (Tech MTF Bullish)", alert.freq_once_per_bar_close)
+    else
+        alert("ACTION REQUIRED: SELL ALL to 100% CASH. (All Markets Bearish)", alert.freq_once_per_bar_close)

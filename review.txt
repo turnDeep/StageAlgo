@@ -1,0 +1,82 @@
+The new script uses this function for trailing stop calculation:
+```pine
+calc_ts(len, mult) =>
+    atr = ta.rma(ta.tr(true), len)
+    offset = atr * mult
+    var float ts = na
+    if na(ts[1])
+        ts := close - offset
+    else
+        if close > ts[1] and close[1] > ts[1]
+            ts := math.max(ts[1], close - offset)
+        else if close < ts[1] and close[1] < ts[1]
+            ts := math.min(ts[1], close + offset)
+        else
+            if close > ts[1]
+                ts := close - offset
+            else
+                ts := close + offset
+    ts
+```
+
+This is the EXACT same issue. `var float ts = na` inside `request.security()`.
+Wait, this script uses `alertcondition()`.
+```pine
+alertcondition(sox_signal and not sox_signal[1], title="SOX Long Entry", message="4D SOX Condition Met: Buy SOXL")
+```
+
+If `calc_ts` is fixed, `sox_signal` will start working.
+With `alertcondition()`, the user must create an alert in TradingView and select the specific alert from the condition dropdown (e.g., "SOX Long Entry").
+
+Let's fix `calc_ts`:
+```pine
+calc_ts(len, mult) =>
+    atr = ta.rma(ta.tr(true), len)
+    offset = atr * mult
+
+    // var を外して状態管理を修復
+    float ts = na
+    prev_ts = nz(ts[1], close - offset)
+
+    if close > prev_ts and nz(close[1], close) > prev_ts
+        ts := math.max(prev_ts, close - offset)
+    else if close < prev_ts and nz(close[1], close) < prev_ts
+        ts := math.min(prev_ts, close + offset)
+    else
+        if close > prev_ts
+            ts := close - offset
+        else
+            ts := close + offset
+    ts
+```
+
+Wait, `ta.tr(true)` is used inside `calc_ts`.
+In Pine Script, `ta.tr` inside a custom function evaluated by `request.security()` correctly uses the HTF's high, low, and close. But `ta.tr(true)` handles `na` values for the previous close automatically, which is fine.
+However, `close` and `close[1]` use the HTF close.
+To be perfectly safe, `nz(close[1], close)` is better than just `close[1]`.
+
+What about `var float eq_port = initial_capital` etc.?
+```pine
+// --- Calculate Equity Curves ---
+var float eq_port = initial_capital
+var float eq_sox = initial_capital
+var float eq_gld = initial_capital
+```
+These are calculated on the main chart timeframe (not inside `request.security()`). Using `var` here is perfectly correct! It accumulates the equity over time.
+However, `eq_port := eq_port * (1 + port_ret)` uses `:=` which correctly updates the `var` variable across bars. This is fine.
+
+Are there any other issues?
+```pine
+sox_w_bull = request.security(sym_sox_sig, "W", calc_bull_signal(sox_w_len, sox_w_mult), lookahead=barmerge.lookahead_off)
+sox_d_bull = request.security(sym_sox_sig, "D", calc_bull_signal(sox_d_len, sox_d_mult), lookahead=barmerge.lookahead_off)
+```
+Using `lookahead=barmerge.lookahead_off`. This means the daily and weekly signals will repaint intraday on the current bar but will not look into the future historically. This is standard behavior for `request.security`. The HTF data updates dynamically on every LTF tick.
+Since they use `alertcondition()`, which triggers by default "Once per bar" or "Once per bar close" depending on how the user sets it up in the UI, this is also fine.
+
+One key difference to explain to the Japanese user:
+In the first code, they used `alert("...", alert.freq_once_per_bar_close)`. That requires "Any alert() function call".
+In this new code, they use `alertcondition(...)`. For `alertcondition`, they MUST NOT select "Any alert() function call". Instead, they must create 4 separate alerts, selecting "SOX Long Entry", "SOX Long Exit", "GLD Long Entry", and "GLD Long Exit" individually from the dropdown menu in the Alert dialog box. If they select "Any alert() function call", nothing will happen because `alertcondition` does not trigger `alert()`.
+
+So, the explanation should be:
+1. The root cause is exactly the same as the previous one: `var float ts = na` inside `request.security()`. It needs to be removed.
+2. The method of setting the alert in TradingView is different for this script. Because this script uses `alertcondition` instead of `alert`, the user needs to create an alert for EACH condition from the dropdown menu, not "Any alert() function call".

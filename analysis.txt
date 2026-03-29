@@ -1,0 +1,48 @@
+User asked three questions based on a screenshot:
+1. 写真のように設定したのは間違い？合ってる？ (Is the setup in the photo wrong or right?)
+2. かつで繋がずに1個ずつ設定した方がいい？ (Should I set them up individually instead of connecting them with "AND"?)
+3. SOXLで設定してるけどGDXUも設定した方がいい？ (I set it up on SOXL, should I also set it up on GDXU?)
+
+Analysis:
+1. The setup is completely WRONG. The user used "かつ" (AND) to combine four different conditions: SOX Long Entry, SOX Long Exit, GLD Long Entry, and GLD Long Exit.
+An "AND" condition means the alert will ONLY fire if ALL four events happen on the exact same bar at the exact same time. This is mathematically impossible (you can't have an Entry and Exit on the same bar simultaneously, nor are SOX and GLD likely to trigger at the exact same millisecond). So this alert will never fire.
+
+2. Yes, they MUST be set up individually.
+The user should create 4 completely separate alerts.
+Alert 1: Condition -> "SOX Long Entry". Click "Create".
+Alert 2: Condition -> "SOX Long Exit". Click "Create".
+Alert 3: Condition -> "GLD Long Entry". Click "Create".
+Alert 4: Condition -> "GLD Long Exit". Click "Create".
+
+3. Regarding SOXL vs GDXU.
+The Pine Script uses `request.security()` to explicitly fetch `INDEX:SOX` and `AMEX:GLD` data, and it also explicitly fetches `SOXL` and `GDXU` close prices.
+Because the script hardcodes the symbols using `request.security()`, the chart that the script is applied to DOES NOT MATTER for the calculations.
+Therefore, if they apply the script to the SOXL chart and create the 4 alerts there, the alerts will work perfectly for both SOXL and GDXU.
+They DO NOT need to apply the script to the GDXU chart and create another set of alerts. Doing so would just create duplicate alerts.
+
+Explanation in Japanese needs to be very clear, as the user is a beginner.
+
+Draft explanation:
+ご提示いただいた写真の設定は**「間違い」**です。このままでは一生アラートが鳴りません。
+理由と正しい設定方法を以下にまとめました。
+
+### 1. 「かつ」で繋ぐのはNG？1個ずつ設定した方がいい？
+**はい、絶対に1個ずつ（計4つの別々のアラートとして）作成してください。**
+
+写真のように「かつ（AND）」で繋いでしまうと、「SOXの買い」「SOXの売り」「GLDの買い」「GLDの売り」の**4つすべての条件が、全く同じ瞬間に同時に発生した場合のみ**鳴る設定になってしまいます。買いと売りが同時に発生することはあり得ないため、このアラートは絶対に鳴りません。
+
+**【正しい設定手順】**
+以下の手順を4回繰り返して、**4つの独立したアラート**を作成してください。
+1. アラート作成画面を開く
+2. 条件のドロップダウンから **「SOX Long Entry」のみ** を選択する（「かつ」で条件を追加しない！）
+3. トリガーを「バーの終値ごとに1回」にする
+4. 「作成」ボタンを押す
+5. 同様に、「SOX Long Exit」「GLD Long Entry」「GLD Long Exit」についても、それぞれ1から作り直す（合計4つのアラートがリストに並ぶ状態が正解です）。
+
+### 2. SOXLで設定してるけどGDXUも設定した方がいい？
+**いいえ、SOXLのチャート上だけで設定すればOKです（GDXUのチャートで二重に設定する必要はありません）。**
+
+このPine Scriptは、スクリプトの内部で自動的に「SOX（半導体）」と「GLD（金）」の両方のデータを読み込んで計算する仕組み（request.security）になっています。
+そのため、表示しているチャートが「SOXL」であっても、裏側ではGLDの計算も完璧に行われています。
+
+SOXLのチャート上で上記の4つのアラートを作成しておけば、GLD（GDXU）の売買シグナルが出た時もちゃんと通知が来ます。もしGDXUのチャートでも同じアラートを作ってしまうと、通知が2重に届いてしまうのでご注意ください。
